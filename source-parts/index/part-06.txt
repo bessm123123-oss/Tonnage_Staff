@@ -1,0 +1,200 @@
+          renderAll();
+          saveWorkspaceNow();
+        });
+      });
+    }
+
+    const createSelect=$('#newExerciseFolder');
+    if(createSelect){
+      const current=createSelect.value;
+      createSelect.innerHTML=folderOptions(current,true);
+      if([...createSelect.options].some(o=>o.value===current)) createSelect.value=current;
+    }
+  }
+
+  function renderExercises(){
+    renderFolders();
+    const root=$('#exerciseTable');
+    if(!state.exercises.length){
+      root.innerHTML='<div class="card"><div class="empty">Справочник пуст. Добавь первое упражнение.</div></div>';
+      return;
+    }
+
+    const orderedFolders=[
+      ...[...state.folders].sort((a,b)=>a.sortOrder-b.sortOrder||a.name.localeCompare(b.name,'ru')).map(f=>({key:f.key,name:f.name})),
+      {key:null,name:'БЕЗ ПАПКИ'}
+    ];
+
+    root.innerHTML=orderedFolders.map(folder=>{
+      const items=sortedExercises().filter(ex=>(ex.folderKey||null)===folder.key);
+      if(!items.length) return '';
+      return `<div class="folder-block">
+        <div class="folder-block-head">
+          <div class="folder-block-title">${esc(folder.name)}</div>
+          <div class="folder-block-count">${items.length} упр.</div>
+        </div>
+        <table>
+          <thead><tr><th>УПРАЖНЕНИЕ</th><th>ГРУППА</th><th>КОЭФ.</th><th>ПАПКА</th><th></th></tr></thead>
+          <tbody>${items.map(x=>`
+            <tr data-key="${esc(x.key)}">
+              <td><input data-field="name" value="${esc(x.name)}"></td>
+              <td><input data-field="muscleGroup" value="${esc(x.muscleGroup)}"></td>
+              <td style="width:100px"><select data-field="factor"><option value="1"${x.factor===1?' selected':''}>×1</option><option value="2"${x.factor===2?' selected':''}>×2</option></select></td>
+              <td style="min-width:170px"><select data-field="folderKey">${folderOptions(x.folderKey||'',true)}</select></td>
+              <td style="width:110px"><button class="btn danger" data-delete-exercise>СПИСАТЬ</button></td>
+            </tr>`).join('')}</tbody>
+        </table>
+      </div>`;
+    }).join('');
+
+    root.querySelectorAll('input,select').forEach(el=>{
+      el.addEventListener('change',()=>{
+        const tr=el.closest('tr');
+        const ex=state.exercises.find(x=>x.key===tr?.dataset.key);
+        if(!ex) return;
+        if(el.dataset.field==='factor') ex.factor=Number(el.value)===2?2:1;
+        else if(el.dataset.field==='folderKey') ex.folderKey=el.value||null;
+        else ex[el.dataset.field]=el.value.trim() || (el.dataset.field==='muscleGroup'?'Другое':'Без названия');
+        renderAll();
+        queueWorkspaceSave();
+      });
+    });
+
+    root.querySelectorAll('[data-delete-exercise]').forEach(btn=>btn.addEventListener('click',()=>{
+      const key=btn.closest('tr')?.dataset.key;
+      const ex=state.exercises.find(x=>x.key===key);
+      if(!confirm(`Списать «${ex?.name||'упражнение'}»? Оно будет удалено и из планов.`)) return;
+      state.exercises=state.exercises.filter(x=>x.key!==key);
+      state.plans.forEach(p=>p.items=p.items.filter(i=>i.exerciseKey!==key));
+      renderAll();
+      saveWorkspaceNow();
+    }));
+  }
+
+  function renderPlanList(){
+    const root=$('#planList');
+    if(!state.plans.length){
+      root.innerHTML='<div class="empty">Планов пока нет.</div>'; return;
+    }
+    root.innerHTML=state.plans.map(p=>`
+      <button class="plan-item ${p.key===state.selectedPlanKey?'active':''}" data-plan="${esc(p.key)}">
+        <div class="plan-item-name">${esc(p.name)}</div>
+        <div class="plan-item-meta">${p.items.length} упражнений</div>
+      </button>`).join('');
+    root.querySelectorAll('[data-plan]').forEach(btn=>btn.addEventListener('click',()=>{
+      state.selectedPlanKey=btn.dataset.plan; renderPlans();
+    }));
+  }
+
+  function renderPlanEditor(){
+    const root=$('#planEditor');
+    const plan=state.plans.find(p=>p.key===state.selectedPlanKey);
+    if(!plan){
+      root.innerHTML='<div class="empty">Выбери или создай план.</div>'; return;
+    }
+    const selected=new Map(plan.items.map(i=>[i.exerciseKey,i]));
+    root.innerHTML=`
+      <div class="between" style="margin-bottom:14px">
+        <div style="flex:1">
+          <label>НАЗВАНИЕ ПЛАНА</label>
+          <input id="planNameInput" value="${esc(plan.name)}" style="margin-top:6px">
+        </div>
+        <button class="btn danger" id="deletePlanBtn">УДАЛИТЬ ПЛАН</button>
+      </div>
+      <div class="section-title">СОСТАВ</div>
+      ${state.exercises.length?`<table>
+        <thead><tr><th></th><th>УПРАЖНЕНИЕ</th><th>ГРУППА</th><th>ПОДХОДОВ</th></tr></thead>
+        <tbody>${sortedExercises().map(ex=>{
+          const item=selected.get(ex.key);
+          return `<tr>
+            <td style="width:42px"><input class="exercise-check" type="checkbox" data-ex-check="${esc(ex.key)}"${item?' checked':''}></td>
+            <td><strong>${esc(ex.name)}</strong></td>
+            <td class="muted">${esc(folderName(ex.folderKey))} · ${esc(ex.muscleGroup)} · ×${ex.factor}</td>
+            <td style="width:110px"><input class="sets-input" type="number" min="1" max="20" value="${item?.setCount||3}" data-sets="${esc(ex.key)}" ${item?'':'disabled'}></td>
+          </tr>`;
+        }).join('')}</tbody>
+      </table>`:'<div class="empty">Сначала добавь упражнения.</div>'}`;
+    $('#planNameInput')?.addEventListener('change',e=>{
+      plan.name=e.target.value.trim()||'Без названия';
+      renderPlanList();
+      renderSchedule();
+      queueWorkspaceSave();
+    });
+    $('#deletePlanBtn')?.addEventListener('click',()=>{
+      if(!confirm(`Удалить план «${plan.name}»? Назначения этого плана будут сняты.`)) return;
+      state.plans=state.plans.filter(p=>p.key!==plan.key);
+      for(const [d,k] of [...state.schedule.entries()]) if(k===plan.key) state.schedule.delete(d);
+      state.selectedPlanKey=state.plans[0]?.key||null;
+      renderAll();
+      saveWorkspaceNow();
+    });
+    root.querySelectorAll('[data-ex-check]').forEach(ch=>ch.addEventListener('change',()=>{
+      const key=ch.dataset.exCheck;
+      if(ch.checked){
+        if(!plan.items.some(i=>i.exerciseKey===key)) plan.items.push({exerciseKey:key,setCount:3});
+      }else{
+        plan.items=plan.items.filter(i=>i.exerciseKey!==key);
+      }
+      renderPlans();
+      queueWorkspaceSave();
+    }));
+    root.querySelectorAll('[data-sets]').forEach(inp=>inp.addEventListener('change',()=>{
+      const item=plan.items.find(i=>i.exerciseKey===inp.dataset.sets);
+      if(item){
+        item.setCount=Math.max(1,Math.min(20,Number(inp.value)||3));
+        queueWorkspaceSave();
+      }
+    }));
+  }
+  function renderPlans(){ renderPlanList(); renderPlanEditor(); }
+
+  function renderSchedule(){
+    const root=$('#scheduleTable');
+    if(!state.plans.length){
+      root.innerHTML='<div class="empty">Для графика нужен хотя бы один план.</div>'; return;
+    }
+    const days=Array.from({length:28},(_,i)=>addDays(state.cursor,i));
+    root.innerHTML=`<table>
+      <thead><tr><th>ДАТА</th><th>НАЗНАЧЕНИЕ</th></tr></thead>
+      <tbody>${days.map(d=>{
+        const k=dateKey(d), selected=state.schedule.get(k)||'';
+        return `<tr>
+          <td style="width:220px"><div class="date-main">${esc(fmtDate(d))}</div><div class="date-sub">${k}</div></td>
+          <td><select data-schedule="${k}">
+            <option value="">— отдых / без назначения —</option>
+            ${state.plans.map(p=>`<option value="${esc(p.key)}"${selected===p.key?' selected':''}>${esc(p.name)}</option>`).join('')}
+          </select></td>
+        </tr>`;
+      }).join('')}</tbody>
+    </table>`;
+    root.querySelectorAll('[data-schedule]').forEach(sel=>sel.addEventListener('change',()=>{
+      const k=sel.dataset.schedule;
+      if(sel.value) state.schedule.set(k,sel.value); else state.schedule.delete(k);
+      queueWorkspaceSave();
+    }));
+  }
+
+  function analyticsSlice(){
+    const a=state.analytics;
+    if(!a) return null;
+
+    const now=new Date();
+    const cutoff=rangeCutoff(state.statsRange,now);
+    const workouts=a.workouts.filter(w=>!cutoff || safeDate(w.finishedAt)>=cutoff);
+    const ids=new Set(workouts.map(w=>w.id));
+    let sets=a.sets.filter(s=>ids.has(s.workoutId));
+
+    if(state.selectedExercise!=='all'){
+      sets=sets.filter(s=>exerciseKeyForSet(s)===state.selectedExercise);
+      const setWorkoutIds=new Set(sets.map(s=>s.workoutId));
+      return {a,now,cutoff,workouts:workouts.filter(w=>setWorkoutIds.has(w.id)),sets};
+    }
+    return {a,now,cutoff,workouts,sets};
+  }
+
+  function getExerciseInfoMap(a){
+    const byId=new Map();
+    const byName=new Map();
+    for(const ex of a.exercises){
+      if(Number.isFinite(ex.id)) byId.set(ex.id,ex);
+      byName.set(ex.name.toLowerCase(),ex);
