@@ -1,0 +1,200 @@
+      state.projectNote=String(raw.recipient.note||'');
+    }
+    state.folders=packageVersion===2
+      ? (Array.isArray(raw.data.folders)?raw.data.folders:[])
+          .filter(x=>x && x.name)
+          .map((x,i)=>({
+            key:String(x.key||uid('folder')),
+            name:String(x.name),
+            sortOrder:Number.isFinite(Number(x.sortOrder))?Number(x.sortOrder):i
+          }))
+          .sort((a,b)=>a.sortOrder-b.sortOrder||a.name.localeCompare(b.name,'ru'))
+      : [];
+    const folderKeys=new Set(state.folders.map(x=>x.key));
+    state.exercises=(Array.isArray(raw.data.exercises)?raw.data.exercises:[])
+      .filter(x=>x && x.name)
+      .map(x=>({
+        key:String(x.key||uid('exercise')),
+        name:String(x.name),
+        muscleGroup:String(x.muscleGroup||'Другое'),
+        factor:x.factor===2?2:1,
+        folderKey:packageVersion===2 && folderKeys.has(String(x.folderKey||''))?String(x.folderKey):null
+      }));
+    const keys=new Set(state.exercises.map(x=>x.key));
+    state.plans=(Array.isArray(raw.data.plans)?raw.data.plans:[])
+      .filter(p=>p && p.name)
+      .map(p=>({
+        key:String(p.key||uid('plan')),
+        name:String(p.name),
+        items:(Array.isArray(p.items)?p.items:[])
+          .filter(it=>keys.has(String(it.exerciseKey)))
+          .sort((a,b)=>(a.sortOrder||0)-(b.sortOrder||0))
+          .map(it=>({exerciseKey:String(it.exerciseKey),setCount:Math.max(1,Math.min(20,Number(it.setCount)||3))}))
+      }));
+    const planKeys=new Set(state.plans.map(p=>p.key));
+    state.schedule=new Map();
+    for(const s of (Array.isArray(raw.data.schedule)?raw.data.schedule:[])){
+      if(/^\d{4}-\d{2}-\d{2}$/.test(String(s.dateKey)) && planKeys.has(String(s.planKey))){
+        state.schedule.set(String(s.dateKey),String(s.planKey));
+      }
+    }
+    state.originalSchedule=new Map(state.schedule);
+    state.originalFolderKeys=new Set(state.folders.map(x=>x.key));
+    state.originalExerciseKeys=new Set(state.exercises.map(x=>x.key));
+    state.originalPlanKeys=new Set(state.plans.map(x=>x.key));
+    state.selectedPlanKey=state.plans[0]?.key || null;
+    renderAll();
+    saveWorkspaceNow();
+    setStatus(`Открыт ${filename}: ${state.folders.length} папок · ${state.exercises.length} упражнений · ${state.plans.length} планов · ${state.schedule.size} назначений.`, 'ok');
+  }
+
+  function loadDatabase(raw, filename='база'){
+    if(!raw || raw.format!=='tonnage-database' || Number(raw.formatVersion)!==1 || !raw.database || !raw.planning){
+      throw new Error('Неподдерживаемая база');
+    }
+
+    loadPackage({
+      format:'tonnage-planning',
+      formatVersion:Number(raw.planning?.folders?2:1),
+      createdAt:raw.createdAt,
+      source:raw.source,
+      data:raw.planning
+    }, filename);
+
+    const db=raw.database;
+    state.analytics={
+      createdAt:raw.createdAt,
+      exercises:(Array.isArray(db.exercises)?db.exercises:[]).map(x=>({
+        id:Number(x.id),
+        externalKey:String(x.externalKey||''),
+        name:String(x.name||'Без названия'),
+        muscleGroup:String(x.muscleGroup||'Другое'),
+        factor:x.factor===2?2:1,
+        folderKey:x.folderKey?String(x.folderKey):null,
+        folderName:x.folderName?String(x.folderName):null
+      })),
+      workouts:(Array.isArray(db.workouts)?db.workouts:[]).map(x=>({
+        id:Number(x.id),
+        startedAt:String(x.startedAt||x.finishedAt||''),
+        finishedAt:String(x.finishedAt||''),
+        totalVolume:Number(x.totalVolume)||0
+      })).sort((a,b)=>safeDate(a.finishedAt)-safeDate(b.finishedAt)),
+      sets:(Array.isArray(db.sets)?db.sets:[]).map(x=>({
+        id:Number(x.id),
+        workoutId:Number(x.workoutId),
+        exerciseId:x.exerciseId===null||x.exerciseId===undefined?null:Number(x.exerciseId),
+        exerciseName:String(x.exerciseName||'Без названия'),
+        setNumber:Number(x.setNumber)||1,
+        weight:Number(x.weight)||0,
+        reps:Number(x.reps)||0,
+        factor:x.factor===2?2:1
+      }))
+    };
+    window.desktopAPI?.saveAnalytics(state.analytics).catch(error=>{
+      console.error('Analytics persistence:',error);
+      setStatus('База открыта, но не удалось сохранить локальную копию.','bad');
+    });
+
+    state.statsRange='all';
+    state.statsFrom='';
+    state.statsTo='';
+    state.statsView='overview';
+    state.selectedExercise='all';
+    state.selectedMuscle='all';
+    state.selectedFolder='all';
+    renderStats();
+    activateTab('stats');
+    setStatus(`База ${filename}: ${state.analytics.workouts.length} тренировок · ${state.analytics.sets.length} подходов. Снимок ${fmtShortDate(raw.createdAt)}.`, 'ok');
+  }
+
+  function folderName(key){
+    if(!key) return 'Без папки';
+    return state.folders.find(f=>f.key===key)?.name || 'Без папки';
+  }
+
+  function folderOrder(key){
+    if(!key) return Number.MAX_SAFE_INTEGER;
+    const folder=state.folders.find(f=>f.key===key);
+    return folder ? folder.sortOrder : Number.MAX_SAFE_INTEGER-1;
+  }
+
+  function sortedExercises(){
+    return [...state.exercises].sort((a,b)=>{
+      const folderDiff=folderOrder(a.folderKey)-folderOrder(b.folderKey);
+      if(folderDiff!==0) return folderDiff;
+      const folderNameDiff=folderName(a.folderKey).localeCompare(folderName(b.folderKey),'ru');
+      if(folderNameDiff!==0) return folderNameDiff;
+      return a.name.localeCompare(b.name,'ru');
+    });
+  }
+
+  function folderOptions(selected='',includeNone=true){
+    return `${includeNone?`<option value=""${!selected?' selected':''}>Без папки</option>`:''}${
+      [...state.folders]
+        .sort((a,b)=>a.sortOrder-b.sortOrder||a.name.localeCompare(b.name,'ru'))
+        .map(f=>`<option value="${esc(f.key)}"${selected===f.key?' selected':''}>${esc(f.name)}</option>`)
+        .join('')
+    }`;
+  }
+
+  function renderClient(){
+    const fields=[
+      ['#projectName',state.projectName],
+      ['#recipientName',state.recipientName],
+      ['#coachName',state.coachName],
+      ['#projectNote',state.projectNote]
+    ];
+    for(const [selector,value] of fields){
+      const element=$(selector);
+      if(element && document.activeElement!==element) element.value=value||'';
+    }
+    const root=$('#clientSummary');
+    if(root){
+      root.innerHTML=`
+        <div class="summary-chip"><span class="tiny">УПРАЖНЕНИЯ</span><strong>${state.exercises.length}</strong></div>
+        <div class="summary-chip"><span class="tiny">ПЛАНЫ</span><strong>${state.plans.length}</strong></div>
+        <div class="summary-chip"><span class="tiny">ДАТЫ</span><strong>${state.schedule.size}</strong></div>
+        <div class="summary-chip"><span class="tiny">ПАПКИ</span><strong>${state.folders.length}</strong></div>`;
+    }
+  }
+
+  function renderFolders(){
+    const list=$('#folderList');
+    if(list){
+      if(!state.folders.length){
+        list.innerHTML='<span class="tiny">Папок пока нет. Старые упражнения остаются в «Без папки».</span>';
+      }else{
+        list.innerHTML=[...state.folders]
+          .sort((a,b)=>a.sortOrder-b.sortOrder||a.name.localeCompare(b.name,'ru'))
+          .map(f=>`
+            <div class="folder-chip" data-folder="${esc(f.key)}">
+              <input value="${esc(f.name)}" data-folder-name="${esc(f.key)}" title="Переименовать папку">
+              <button data-delete-folder="${esc(f.key)}">УДАЛИТЬ</button>
+            </div>`).join('');
+      }
+
+      list.querySelectorAll('[data-folder-name]').forEach(inp=>{
+        inp.addEventListener('change',()=>{
+          const folder=state.folders.find(f=>f.key===inp.dataset.folderName);
+          if(!folder) return;
+          const name=inp.value.trim()||'Без названия';
+          const duplicate=state.folders.some(f=>f.key!==folder.key&&f.name.trim().toLowerCase()===name.toLowerCase());
+          if(duplicate){
+            alert('Папка с таким названием уже существует.');
+            inp.value=folder.name;
+            return;
+          }
+          folder.name=name;
+          renderAll();
+          queueWorkspaceSave();
+        });
+      });
+
+      list.querySelectorAll('[data-delete-folder]').forEach(btn=>{
+        btn.addEventListener('click',()=>{
+          const key=btn.dataset.deleteFolder;
+          const folder=state.folders.find(f=>f.key===key);
+          if(!folder) return;
+          if(!confirm(`Удалить папку «${folder.name}»?\n\nУпражнения не исчезнут — они перейдут в «Без папки».`)) return;
+          state.folders=state.folders.filter(f=>f.key!==key);
+          state.exercises.forEach(ex=>{if(ex.folderKey===key) ex.folderKey=null});
