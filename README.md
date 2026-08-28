@@ -28,6 +28,10 @@ npm run dist:win
 
 The application does not require a server or internet connection at runtime.
 
+### Renderer source layout
+
+`src/index.html` and `src/analytics-core.js` are generated locally before tests/start/build. Their canonical source is stored in ordered chunks under `source-parts/index/` and `source-parts/analytics/`; `scripts/materialize-sources.js` joins those chunks byte-for-byte. This keeps the complete recovered 0.5.0 source reproducible while still allowing the repository integration to manage the large renderer files reliably.
+
 ## Repository workflow
 
 The repository is intended to keep source history separate from generated Windows binaries.
