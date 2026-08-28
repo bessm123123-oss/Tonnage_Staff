@@ -1,0 +1,156 @@
+    setStatus(`Программа сохранена: ${payload.data.exercises.length} упражнений · ${payload.data.plans.length} планов · ${payload.data.schedule.length} назначений.`,'ok');
+    return {name:filename};
+  }
+  function importText(text,filename='файл'){
+    const parsed=TonnageFormat.parseAndValidate(text);
+    if(parsed.type==='database') loadDatabase(parsed.raw,filename);
+    else loadPackage(parsed.raw,filename);
+    return parsed.type;
+  }
+  async function openNativeFile(){
+    const file=await window.desktopAPI?.openDataFile();
+    if(file) importText(file.text,file.name);
+  }
+
+  $$('.nav button').forEach(btn=>btn.addEventListener('click',()=>{
+    activateTab(btn.dataset.tab);
+  }));
+  $('#settingsBtn').addEventListener('click',()=>activateTab('settings'));
+  for(const [selector,key] of [['#projectName','projectName'],['#recipientName','recipientName'],['#coachName','coachName'],['#projectNote','projectNote']]){
+    $(selector)?.addEventListener('input',event=>{
+      state[key]=event.target.value;
+      renderClient();
+      queueWorkspaceSave();
+    });
+  }
+  $('#clientNewBtn')?.addEventListener('click',()=>{
+    if(confirm('Начать новый проект спортсмена?\n\nТекущие упражнения, планы и график будут очищены. Загруженная статистика останется открытой.')){
+      reset({keepAnalytics:true});activateTab('client');
+    }
+  });
+  $('#clientExportBtn')?.addEventListener('click',()=>savePlanning().catch(error=>{console.error(error);setStatus('Не удалось сохранить программу.','bad')}));
+
+  $('#saveWorkspaceBtn').addEventListener('click',()=>{
+    if(saveWorkspaceNow()) setStatus('Локальный черновик сохранён вручную.','ok');
+  });
+
+  $('#clearWorkspaceBtn').addEventListener('click',()=>{
+    if(!confirm('Сбросить локальный штаб?\n\nБудут очищены папки, упражнения, планы и график в текущем окне и локальном автосохранении. Сначала сохрани .tonnage, если данные нужны.')) return;
+    reset();
+    setStatus('Локальный штаб сброшен.','ok');
+  });
+  $('#addFolderBtn').addEventListener('click',()=>{
+    const input=$('#newFolderName');
+    const name=input.value.trim();
+    if(!name){alert('Укажи название папки.');return;}
+    if(state.folders.some(f=>f.name.trim().toLowerCase()===name.toLowerCase())){
+      alert('Такая папка уже существует.');return;
+    }
+    const nextSort=state.folders.length?Math.max(...state.folders.map(f=>Number(f.sortOrder)||0))+1:0;
+    state.folders.push({key:uid('folder'),name,sortOrder:nextSort});
+    input.value='';
+    renderAll();
+    saveWorkspaceNow();
+  });
+
+  $('#newFolderName').addEventListener('keydown',e=>{
+    if(e.key==='Enter') $('#addFolderBtn').click();
+  });
+
+  $('#addExerciseBtn').addEventListener('click',()=>{
+    const name=$('#newExerciseName').value.trim();
+    if(!name){alert('Укажи название упражнения.');return;}
+    const group=$('#newExerciseGroup').value.trim()||'Другое';
+    const factor=Number($('#newExerciseFactor').value)===2?2:1;
+    const folderKey=$('#newExerciseFolder').value||null;
+
+    state.exercises.push({
+      key:uid('exercise'),
+      name,
+      muscleGroup:group,
+      factor,
+      folderKey
+    });
+
+    $('#newExerciseName').value='';
+    $('#newExerciseGroup').value='';
+    $('#newExerciseFactor').value='1';
+    renderAll();
+    saveWorkspaceNow();
+  });
+  $('#addPlanBtn').addEventListener('click',()=>{
+    const p={key:uid('plan'),name:'Новый план',items:[]};
+    state.plans.unshift(p);
+    state.selectedPlanKey=p.key;
+    renderPlans();
+    renderSchedule();
+    saveWorkspaceNow();
+  });
+  $('#newBtn').addEventListener('click',()=>{
+    if(confirm('Начать новую программу?\n\nУпражнения, планы и график будут очищены. Загруженная статистика останется открытой.')){
+      reset({keepAnalytics:true});activateTab('client');
+    }
+  });
+  $('#fileInput').addEventListener('change',async e=>{
+    const file=e.target.files?.[0]; if(!file) return;
+    try{
+      importText(await file.text(),file.name);
+    }
+    catch(err){
+      console.error(err);
+      setStatus('Файл не принят: повреждён или формат не поддерживается.','bad');
+    }
+    e.target.value='';
+  });
+  $('#exportBtn').addEventListener('click',()=>{
+    savePlanning().catch(err=>{console.error(err);setStatus('Не удалось сохранить пакет.','bad')});
+  });
+  $('#prevWeekBtn').addEventListener('click',()=>{state.cursor=addDays(state.cursor,-7);renderSchedule();queueWorkspaceSave()});
+  $('#nextWeekBtn').addEventListener('click',()=>{state.cursor=addDays(state.cursor,7);renderSchedule();queueWorkspaceSave()});
+  $('#todayBtn').addEventListener('click',()=>{state.cursor=startOfWeek(new Date());renderSchedule();queueWorkspaceSave()});
+
+  const restored = restoreWorkspace();
+  renderAll();
+
+  if(restored){
+    setStatus(
+      `Локальный черновик восстановлен: ${state.folders.length} папок · ${state.exercises.length} упражнений · ${state.plans.length} планов · ${state.schedule.size} назначений.`,
+      'ok'
+    );
+  }
+
+  window.addEventListener('beforeunload',()=>{
+    saveWorkspaceNow();
+  });
+
+  if(window.desktopAPI){
+    const topOpenLabel=$('#fileInput')?.closest('label');
+    if(topOpenLabel){
+      topOpenLabel.addEventListener('click',event=>{
+        event.preventDefault();
+        openNativeFile().catch(error=>{console.error(error);setStatus(error.message||'Не удалось открыть файл.','bad')});
+      });
+    }
+    window.desktopAPI.onOpenedFile(payload=>{
+      try{importText(payload.text,payload.name)}catch(error){console.error(error);setStatus(error.message||'Файл не принят.','bad')}
+    });
+    window.desktopAPI.onCommand(command=>{
+      if(command==='open') openNativeFile().catch(console.error);
+      if(command==='save-planning') savePlanning().catch(console.error);
+      if(command==='export-csv') exportStatsCsv().catch(console.error);
+      if(command==='print-pdf') printStatsPdf().catch(console.error);
+    });
+  }
+
+  window.TonnageStaff={
+    importText,
+    snapshot:()=>workspaceSnapshot(),
+    package:()=>currentPackage(),
+    openSection:activateTab,
+    exportPlanning:()=>JSON.stringify(currentPackage(),null,2),
+    analyticsModel:()=>lastStatsModel
+  };
+})();
+</script>
+</body>
+</html>
