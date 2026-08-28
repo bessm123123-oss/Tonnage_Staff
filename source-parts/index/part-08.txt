@@ -1,0 +1,199 @@
+    const slice=analyticsSlice();
+    const agg=aggregateAnalytics(slice);
+    const allExerciseOptions=[...agg.byExercise.values()].sort((a,b)=>a.name.localeCompare(b.name,'ru'));
+    const top=[...agg.byExercise.values()].sort((a,b)=>b.volume-a.volume).slice(0,10);
+    const muscles=[...agg.muscle.entries()].sort((a,b)=>b[1]-a[1]);
+
+    let selectedDetail=null;
+    if(state.selectedExercise!=='all'){
+      selectedDetail=agg.byExercise.get(state.selectedExercise)||null;
+    }
+
+    const recent=[...slice.workouts].sort((a,b)=>safeDate(b.finishedAt)-safeDate(a.finishedAt)).slice(0,20);
+    const records=[...agg.byExercise.values()].sort((a,b)=>b.maxWeight-a.maxWeight).slice(0,20);
+
+    root.innerHTML=`
+      <div class="card">
+        <div class="stats-toolbar">
+          <div>
+            <div class="section-title" style="margin-bottom:4px">РАСШИРЕННАЯ СТАТИСТИКА</div>
+            <div class="split-note">Снимок базы: ${esc(fmtShortDate(state.analytics.createdAt))}. Данные на ноуте не изменяют историю телефона.</div>
+          </div>
+          <div class="stats-controls">
+            <div>
+              <label>ПЕРИОД</label>
+              <select id="statsRange" style="margin-top:6px">
+                <option value="all"${state.statsRange==='all'?' selected':''}>Всё время</option>
+                <option value="30"${state.statsRange==='30'?' selected':''}>30 дней</option>
+                <option value="90"${state.statsRange==='90'?' selected':''}>90 дней</option>
+                <option value="180"${state.statsRange==='180'?' selected':''}>180 дней</option>
+                <option value="365"${state.statsRange==='365'?' selected':''}>365 дней</option>
+              </select>
+            </div>
+            <div>
+              <label>УПРАЖНЕНИЕ</label>
+              <select id="statsExercise" style="margin-top:6px">
+                <option value="all">Все упражнения</option>
+                ${(() => {
+                  const a=state.analytics,maps=getExerciseInfoMap(a);
+                  const keys=new Map();
+                  for(const s of a.sets){
+                    const k=exerciseKeyForSet(s), ex=exerciseInfoForSet(s,maps);
+                    if(!keys.has(k)) keys.set(k,ex.name||s.exerciseName);
+                  }
+                  return [...keys.entries()].sort((a,b)=>a[1].localeCompare(b[1],'ru'))
+                    .map(([k,n])=>`<option value="${esc(k)}"${state.selectedExercise===k?' selected':''}>${esc(n)}</option>`).join('');
+                })()}
+              </select>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="metric-grid">
+        <div class="metric"><div class="metric-label">ТОННАЖ</div><div class="metric-value">${esc(fmtWeight(agg.totalVolume))}</div>
+          <div class="metric-sub">${state.statsRange==='all'?'за всё время':deltaHtml(agg.totalVolume,agg.prevVolume)}</div></div>
+        <div class="metric"><div class="metric-label">ТРЕНИРОВОК</div><div class="metric-value">${fmtNum(agg.workoutCount)}</div>
+          <div class="metric-sub">${state.statsRange==='all'?`${agg.activeDates.size} активных дней`:deltaHtml(agg.workoutCount,agg.prevWorkoutCount)}</div></div>
+        <div class="metric"><div class="metric-label">ПОДХОДОВ / ПОВТОРОВ</div><div class="metric-value">${fmtNum(agg.totalSets)} / ${fmtNum(agg.totalReps)}</div>
+          <div class="metric-sub">в среднем ${agg.averageSets.toLocaleString('ru-RU',{maximumFractionDigits:1})} подхода на тренировку</div></div>
+        <div class="metric"><div class="metric-label">СРЕДНЯЯ ТРЕНИРОВКА</div><div class="metric-value">${esc(fmtWeight(agg.averageWorkout))}</div>
+          <div class="metric-sub">средний тоннаж выбранного периода</div></div>
+        <div class="metric"><div class="metric-label">ЛУЧШАЯ ТРЕНИРОВКА</div><div class="metric-value">${esc(fmtWeight(agg.bestWorkout?.totalVolume||0))}</div>
+          <div class="metric-sub">${agg.bestWorkout?esc(fmtShortDate(agg.bestWorkout.finishedAt)):'данных нет'}</div></div>
+        <div class="metric"><div class="metric-label">УПРАЖНЕНИЙ В ИСТОРИИ</div><div class="metric-value">${fmtNum(agg.byExercise.size)}</div>
+          <div class="metric-sub">${fmtNum(agg.activeDates.size)} дней с зафиксированной работой</div></div>
+      </div>
+
+      <div class="analytics-grid">
+        <div class="card">
+          <div class="section-title">ТОННАЖ ПО МЕСЯЦАМ</div>
+          <div class="split-note">Последние 12 месяцев в выбранном диапазоне.</div>
+          ${renderBars(agg.months,12,'month')}
+        </div>
+        <div class="card">
+          <div class="section-title">АКТИВНОСТЬ · 13 НЕДЕЛЬ</div>
+          <div class="split-note">Чем светлее клетка — тем больше тоннаж за день.</div>
+          ${renderHeatmap(state.analytics)}
+        </div>
+      </div>
+
+      <div class="analytics-grid">
+        <div class="card">
+          <div class="section-title">ПОСЛЕДНИЕ 12 НЕДЕЛЬ</div>
+          ${renderBars(agg.weeks,12,'week')}
+        </div>
+        <div class="card">
+          <div class="section-title">ГРУППЫ МЫШЦ ПО ТОННАЖУ</div>
+          ${renderHorizontalBars(muscles.slice(0,8),agg.totalVolume)}
+        </div>
+      </div>
+
+      <div class="analytics-grid">
+        <div class="card">
+          <div class="section-title">ТОП УПРАЖНЕНИЙ</div>
+          <div class="rank-list">
+            ${top.length?top.map((e,i)=>`
+              <div class="rank-item">
+                <div class="rank-no">${String(i+1).padStart(2,'0')}</div>
+                <div><div class="rank-name">${esc(e.name)}</div>
+                  <div class="rank-meta">${esc(e.muscleGroup)} · ${e.sessions.size} тренировок · ${e.sets} подходов</div></div>
+                <div class="rank-value">${esc(fmtWeight(e.volume))}</div>
+              </div>`).join(''):'<div class="empty">Данных нет.</div>'}
+          </div>
+        </div>
+        <div class="card">
+          <div class="section-title">ЛИЧНЫЕ МАКСИМУМЫ</div>
+          <div style="overflow:auto">
+            <table class="record-table">
+              <thead><tr><th>УПРАЖНЕНИЕ</th><th>МАКС. ВЕС</th><th>ПОВТ.</th><th>ЛУЧШИЙ ТОННАЖ</th></tr></thead>
+              <tbody>${records.length?records.map(e=>`<tr>
+                <td>${esc(e.name)}</td><td>${e.maxWeight.toLocaleString('ru-RU')} кг</td>
+                <td>${fmtNum(e.repsAtMaxWeight)}</td><td>${esc(fmtWeight(e.bestWorkoutVolume))}</td>
+              </tr>`).join(''):'<tr><td colspan="4" class="muted">Данных нет.</td></tr>'}</tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      ${selectedDetail?`
+        <div class="card">
+          <div class="exercise-detail-head">
+            <div><div class="section-title" style="margin:0">${esc(selectedDetail.name)}</div>
+              <div class="split-note">${esc(selectedDetail.muscleGroup)} · ${selectedDetail.sessions.size} тренировок · ${selectedDetail.sets} подходов · ${fmtNum(selectedDetail.reps)} повторов</div></div>
+            <div class="pill">Лучший сеанс: ${esc(fmtWeight(selectedDetail.bestWorkoutVolume))}</div>
+          </div>
+          ${renderSparkline(selectedDetail.points)}
+        </div>`:''}
+
+      <div class="card">
+        <div class="section-title">ПОСЛЕДНИЕ ТРЕНИРОВКИ</div>
+        <div style="overflow:auto">
+          <table>
+            <thead><tr><th>ДАТА</th><th>ТОННАЖ</th><th>ПОДХОДОВ</th><th>ПОВТОРОВ</th><th>УПРАЖНЕНИЙ</th></tr></thead>
+            <tbody>${recent.length?recent.map(w=>{
+              const ws=slice.sets.filter(s=>s.workoutId===w.id);
+              const exCount=new Set(ws.map(exerciseKeyForSet)).size;
+              const vol=state.selectedExercise==='all'?w.totalVolume:ws.reduce((sum,s)=>sum+s.weight*s.reps*(s.factor===2?2:1),0);
+              return `<tr><td>${esc(fmtShortDate(w.finishedAt))}</td><td>${esc(fmtWeight(vol))}</td>
+                <td>${fmtNum(ws.length)}</td><td>${fmtNum(ws.reduce((sum,s)=>sum+s.reps,0))}</td><td>${fmtNum(exCount)}</td></tr>`;
+            }).join(''):'<tr><td colspan="5" class="muted">Нет тренировок в выбранном диапазоне.</td></tr>'}</tbody>
+          </table>
+        </div>
+      </div>
+    `;
+
+    $('#statsRange')?.addEventListener('change',e=>{state.statsRange=e.target.value;renderStats()});
+    $('#statsExercise')?.addEventListener('change',e=>{state.selectedExercise=e.target.value;renderStats()});
+  }
+
+  let lastStatsModel=null;
+
+  function fmtDecimal(value,digits=1){
+    return (Number(value)||0).toLocaleString('ru-RU',{maximumFractionDigits:digits});
+  }
+  function fmtDuration(minutes){
+    const value=Math.max(0,Number(minutes)||0);
+    if(value<60) return `${Math.round(value)} мин`;
+    const hours=Math.floor(value/60),mins=Math.round(value%60);
+    return `${hours} ч${mins?` ${mins} мин`:''}`;
+  }
+  function metricCard(label,value,sub=''){
+    return `<div class="metric"><div class="metric-label">${esc(label)}</div><div class="metric-value">${esc(value)}</div><div class="metric-sub">${sub}</div></div>`;
+  }
+  function statsHbars(rows,valueField='value',valueFormatter=fmtWeight){
+    if(!rows.length) return '<div class="empty">Данных нет.</div>';
+    const max=Math.max(1,...rows.map(row=>Number(row[valueField])||0));
+    return `<div class="hbar-list">${rows.map(row=>{
+      const value=Number(row[valueField])||0;
+      return `<div class="hbar-row"><div class="hbar-name" title="${esc(row.name||row.key)}">${esc(row.name||row.key)}</div>
+        <div class="hbar-track"><div class="hbar-fill" style="width:${Math.max(value?1:0,value/max*100)}%"></div></div>
+        <div class="hbar-value">${esc(valueFormatter(value))}</div></div>`;
+    }).join('')}</div>`;
+  }
+  function statsSeriesBars(rows,count=26){
+    const entries=rows.slice(-count);
+    if(!entries.length) return '<div class="empty">Данных нет.</div>';
+    const max=Math.max(1,...entries.map(row=>row.value));
+    return `<div class="chart slim">${entries.map(row=>`<div class="bar-wrap" title="${esc(row.key)} · ${esc(fmtWeight(row.value))}${row.rolling4!==undefined?` · средняя 4 недели ${esc(fmtWeight(row.rolling4))}`:''}">
+      <div class="bar-value">${row.value?esc(fmtWeight(row.value)):''}</div><div class="bar" style="height:${Math.max(2,row.value/max*125)}px"></div>
+      <div class="bar-label">${esc(fmtShortDate(row.key))}</div></div>`).join('')}</div>`;
+  }
+  function modelHeatmap(model){
+    const end=startOfLocalDay(model.metrics.lastDate||new Date());
+    const start=addDays(end,-90);
+    const daily=new Map(model.daySeries.map(row=>[row.key,row.value]));
+    const max=Math.max(1,...daily.values());
+    const startMonday=startOfIsoWeek(start);
+    const weeks=[];
+    for(let wi=0;wi<13;wi++){
+      const cells=[];
+      for(let di=0;di<7;di++){
+        const d=addDays(startMonday,wi*7+di),key=dateKey(d),value=daily.get(key)||0;
+        const ratio=value/max;
+        const level=!value?'':ratio>.72?'l4':ratio>.42?'l3':ratio>.18?'l2':'l1';
+        cells.push(`<div class="heat-day ${level}" title="${key}${value?' · '+fmtWeight(value):''}"></div>`);
+      }
+      weeks.push(`<div class="heat-week">${cells.join('')}</div>`);
+    }
+    return `<div class="heatmap">${weeks.join('')}</div><div class="heat-legend">меньше <span class="legend-cell" style="background:#12161b"></span><span class="legend-cell" style="background:#2f343a"></span><span class="legend-cell" style="background:#555d65"></span><span class="legend-cell" style="background:#8f969e"></span><span class="legend-cell" style="background:#e4e8eb"></span> больше</div>`;
