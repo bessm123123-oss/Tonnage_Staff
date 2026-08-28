@@ -1,0 +1,200 @@
+        return false;
+      }
+
+      state.projectName=String(saved.projectName||'Новая программа');
+      state.recipientName=String(saved.recipientName||'');
+      state.coachName=String(saved.coachName||'');
+      state.projectNote=String(saved.projectNote||'');
+      state.folders=Array.isArray(saved.folders)?saved.folders:[];
+      state.exercises=Array.isArray(saved.exercises)?saved.exercises:[];
+      state.plans=Array.isArray(saved.plans)?saved.plans:[];
+      state.schedule=new Map(Array.isArray(saved.schedule)?saved.schedule:[]);
+      state.originalSchedule=new Map(Array.isArray(saved.originalSchedule)?saved.originalSchedule:[]);
+      state.originalFolderKeys=new Set(Array.isArray(saved.originalFolderKeys)?saved.originalFolderKeys:[]);
+      state.originalExerciseKeys=new Set(Array.isArray(saved.originalExerciseKeys)?saved.originalExerciseKeys:[]);
+      state.originalPlanKeys=new Set(Array.isArray(saved.originalPlanKeys)?saved.originalPlanKeys:[]);
+      state.selectedPlanKey=saved.selectedPlanKey || state.plans[0]?.key || null;
+
+      const restoredCursor=saved.cursor?new Date(saved.cursor):startOfWeek(new Date());
+      state.cursor=Number.isNaN(restoredCursor.getTime())?startOfWeek(new Date()):restoredCursor;
+      state.analytics=desktopAnalytics&&Array.isArray(desktopAnalytics.workouts)?desktopAnalytics:null;
+
+      setAutosaveState('ВОССТАНОВЛЕНО');
+      return true;
+    }catch(err){
+      console.error('Workspace restore:',err);
+      setAutosaveState('НЕ УДАЛОСЬ ВОССТАНОВИТЬ');
+      return false;
+    }
+  }
+
+  const $ = s => document.querySelector(s);
+  const $$ = s => [...document.querySelectorAll(s)];
+
+  function uid(prefix){
+    const core = (crypto.randomUUID ? crypto.randomUUID() :
+      Date.now().toString(36) + '-' + Math.random().toString(36).slice(2));
+    return `windows-${prefix}-${core}`;
+  }
+  function esc(s){
+    return String(s ?? '').replace(/[&<>"']/g, c => ({
+      '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
+    })[c]);
+  }
+  function dateKey(d){
+    const y=d.getFullYear(), m=String(d.getMonth()+1).padStart(2,'0'), day=String(d.getDate()).padStart(2,'0');
+    return `${y}-${m}-${day}`;
+  }
+  function fromDateKey(k){
+    const [y,m,d]=k.split('-').map(Number);
+    return new Date(y,m-1,d,12,0,0,0);
+  }
+  function addDays(d,n){
+    const x=new Date(d); x.setDate(x.getDate()+n); return x;
+  }
+  function startOfWeek(d){
+    const x=new Date(d); const day=(x.getDay()+6)%7; x.setDate(x.getDate()-day); x.setHours(12,0,0,0); return x;
+  }
+  function fmtDate(d){
+    return new Intl.DateTimeFormat('ru-RU',{day:'2-digit',month:'short',weekday:'short'}).format(d);
+  }
+  function fmtWeight(v){
+    const n=Number(v)||0;
+    if(n>=1000000) return `${(n/1000000).toLocaleString('ru-RU',{maximumFractionDigits:2})} млн кг`;
+    if(n>=1000) return `${(n/1000).toLocaleString('ru-RU',{maximumFractionDigits:1})} т`;
+    return `${Math.round(n).toLocaleString('ru-RU')} кг`;
+  }
+  function fmtNum(v){
+    return Math.round(Number(v)||0).toLocaleString('ru-RU');
+  }
+  function fmtShortDate(value){
+    const d=new Date(value);
+    if(Number.isNaN(d.getTime())) return String(value||'');
+    return new Intl.DateTimeFormat('ru-RU',{day:'2-digit',month:'2-digit',year:'2-digit'}).format(d);
+  }
+  function startOfLocalDay(d){
+    const x=new Date(d); x.setHours(0,0,0,0); return x;
+  }
+  function daysBetween(a,b){
+    return Math.floor((startOfLocalDay(b)-startOfLocalDay(a))/86400000);
+  }
+  function pctDelta(current,previous){
+    if(previous<=0) return current>0?null:0;
+    return ((current-previous)/previous)*100;
+  }
+  function deltaHtml(current,previous){
+    const d=pctDelta(current,previous);
+    if(d===null) return '<span class="delta-up">новая активность</span>';
+    const cls=d>0.5?'delta-up':d<-0.5?'delta-down':'delta-flat';
+    const sign=d>0?'+':'';
+    return `<span class="${cls}">${sign}${d.toLocaleString('ru-RU',{maximumFractionDigits:1})}% к предыдущему периоду</span>`;
+  }
+  function safeDate(value){
+    const d=new Date(value); return Number.isNaN(d.getTime())?new Date(0):d;
+  }
+  function startOfIsoWeek(d){
+    const x=startOfLocalDay(d);
+    const day=(x.getDay()+6)%7;
+    x.setDate(x.getDate()-day);
+    return x;
+  }
+  function monthKey(d){return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;}
+  function weekKey(d){return dateKey(startOfIsoWeek(d));}
+  function rangeCutoff(range,now){
+    if(range==='all') return null;
+    const days=Number(range);
+    const d=startOfLocalDay(now);
+    d.setDate(d.getDate()-days+1);
+    return d;
+  }
+  function exerciseKeyForSet(s){
+    return s.exerciseId!==null && s.exerciseId!==undefined ? `id:${s.exerciseId}` : `name:${String(s.exerciseName||'').toLowerCase()}`;
+  }
+
+  function setStatus(text, kind=''){
+    const el=$('#status'); el.textContent=text; el.className='status'+(kind?' '+kind:'');
+  }
+  function currentPackage(){
+    const removed = [];
+    for(const k of state.originalSchedule.keys()){
+      if(!state.schedule.has(k)) removed.push(k);
+    }
+    const currentFolderKeys=new Set(state.folders.map(x=>x.key));
+    const currentExerciseKeys=new Set(state.exercises.map(x=>x.key));
+    const currentPlanKeys=new Set(state.plans.map(x=>x.key));
+    const removeFolderKeys=[...state.originalFolderKeys].filter(k=>!currentFolderKeys.has(k));
+    const removeExerciseKeys=[...state.originalExerciseKeys].filter(k=>!currentExerciseKeys.has(k));
+    const removePlanKeys=[...state.originalPlanKeys].filter(k=>!currentPlanKeys.has(k));
+    return {
+      format:'tonnage-planning',
+      formatVersion:2,
+      createdAt:new Date().toISOString(),
+      source:{platform:'windows',appVersion:APP_VERSION},
+      recipient:{
+        name:state.recipientName.trim(),
+        coach:state.coachName.trim(),
+        project:state.projectName.trim(),
+        note:state.projectNote.trim()
+      },
+      data:{
+        folders:state.folders.map((x,i)=>({
+          key:x.key,name:x.name,sortOrder:Number.isFinite(x.sortOrder)?x.sortOrder:i
+        })),
+        exercises:state.exercises.map(x=>({
+          key:x.key,name:x.name,muscleGroup:x.muscleGroup||'Другое',
+          factor:x.factor===2?2:1,folderKey:x.folderKey||null
+        })),
+        plans:state.plans.map(p=>({
+          key:p.key,name:p.name,
+          items:[...p.items].map((it,i)=>({
+            exerciseKey:it.exerciseKey,
+            setCount:Math.max(1,Math.min(20,Number(it.setCount)||3)),
+            sortOrder:i
+          }))
+        })),
+        schedule:[...state.schedule.entries()].map(([dateKey,planKey])=>({dateKey,planKey})),
+        removeScheduleDates:removed,
+        removeFolderKeys,
+        removeExerciseKeys,
+        removePlanKeys
+      }
+    };
+  }
+  function reset(options={}){
+    const keepAnalytics=options.keepAnalytics===true;
+    const existingAnalytics=state.analytics;
+    state.projectName='Новая программа';
+    state.recipientName='';
+    state.projectNote='';
+    state.folders=[];
+    state.exercises=[];
+    state.plans=[];
+    state.schedule=new Map();
+    state.originalSchedule=new Map();
+    state.originalFolderKeys=new Set();
+    state.originalExerciseKeys=new Set();
+    state.originalPlanKeys=new Set();
+    state.selectedPlanKey=null;
+    state.cursor=startOfWeek(new Date());
+    state.analytics=keepAnalytics?existingAnalytics:null;
+    state.statsRange='all';
+    state.statsFrom='';
+    state.statsTo='';
+    state.statsView='overview';
+    state.selectedExercise='all';
+    state.selectedMuscle='all';
+    state.selectedFolder='all';
+    if(!keepAnalytics) clearWorkspaceStorage();
+    renderAll();
+    saveWorkspaceNow();
+    setStatus(keepAnalytics?'Новый проект спортсмена. Загруженная статистика оставлена для справки.':'Новый пустой штабной пакет. Можно начинать планирование.');
+  }
+  function loadPackage(raw, filename='пакет'){
+    if(!raw || raw.format!=='tonnage-planning' || ![1,2].includes(Number(raw.formatVersion)) || !raw.data){
+      throw new Error('Неподдерживаемый формат');
+    }
+    const packageVersion=Number(raw.formatVersion)===2?2:1;
+    if(raw.recipient && typeof raw.recipient==='object'){
+      state.recipientName=String(raw.recipient.name||'');
+      state.coachName=String(raw.recipient.coach||state.coachName||'');
+      state.projectName=String(raw.recipient.project||'Новая программа');
