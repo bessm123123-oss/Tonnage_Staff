@@ -1,0 +1,200 @@
+    }
+    return {byId,byName};
+  }
+
+  function exerciseInfoForSet(s,maps){
+    return (s.exerciseId!==null?maps.byId.get(s.exerciseId):null) ||
+      maps.byName.get(String(s.exerciseName||'').toLowerCase()) ||
+      {id:s.exerciseId,name:s.exerciseName||'Архивное упражнение',muscleGroup:'Архив / удалено',factor:s.factor};
+  }
+
+  function aggregateAnalytics(slice){
+    const {a,now,cutoff,workouts,sets}=slice;
+    const maps=getExerciseInfoMap(a);
+    const workoutById=new Map(workouts.map(w=>[w.id,w]));
+    const volumeFromSets=sets.reduce((sum,s)=>sum+s.weight*s.reps*(s.factor===2?2:1),0);
+    const totalVolume=state.selectedExercise==='all'
+      ? workouts.reduce((sum,w)=>sum+w.totalVolume,0)
+      : volumeFromSets;
+    const totalSets=sets.length;
+    const totalReps=sets.reduce((sum,s)=>sum+s.reps,0);
+    let bestWorkout=workouts.reduce((best,w)=>!best||w.totalVolume>best.totalVolume?w:best,null);
+    const activeDates=new Set(workouts.map(w=>dateKey(safeDate(w.finishedAt))));
+
+    const byExercise=new Map();
+    for(const s of sets){
+      const ex=exerciseInfoForSet(s,maps);
+      const key=exerciseKeyForSet(s);
+      if(!byExercise.has(key)){
+        byExercise.set(key,{
+          key,name:ex.name||s.exerciseName,muscleGroup:ex.muscleGroup||'Другое',
+          sessions:new Set(),volume:0,sets:0,reps:0,maxWeight:0,repsAtMaxWeight:0,bestWorkoutVolume:0,
+          perWorkout:new Map(),points:[]
+        });
+      }
+      const e=byExercise.get(key);
+      e.sessions.add(s.workoutId);
+      const vol=s.weight*s.reps*(s.factor===2?2:1);
+      e.volume+=vol;e.sets++;e.reps+=s.reps;
+      if(s.weight>e.maxWeight || (s.weight===e.maxWeight && s.reps>e.repsAtMaxWeight)){
+        e.maxWeight=s.weight;e.repsAtMaxWeight=s.reps;
+      }
+      e.perWorkout.set(s.workoutId,(e.perWorkout.get(s.workoutId)||0)+vol);
+    }
+    for(const e of byExercise.values()){
+      e.bestWorkoutVolume=Math.max(0,...e.perWorkout.values());
+      e.points=[...e.perWorkout.entries()].map(([id,volume])=>({
+        id,volume,date:workoutById.get(id)?.finishedAt||a.workouts.find(w=>w.id===id)?.finishedAt||''
+      })).sort((x,y)=>safeDate(x.date)-safeDate(y.date));
+    }
+
+    if(state.selectedExercise!=='all'){
+      const selected=byExercise.get(state.selectedExercise);
+      if(selected?.points.length){
+        const bestPoint=selected.points.reduce((best,p)=>!best||p.volume>best.volume?p:best,null);
+        bestWorkout=bestPoint?{totalVolume:bestPoint.volume,finishedAt:bestPoint.date}:null;
+      }else{
+        bestWorkout=null;
+      }
+    }
+
+    const muscle=new Map();
+    for(const e of byExercise.values()){
+      muscle.set(e.muscleGroup,(muscle.get(e.muscleGroup)||0)+e.volume);
+    }
+
+    const months=new Map();
+    for(const w of workouts){
+      const d=safeDate(w.finishedAt), k=monthKey(d);
+      const v=state.selectedExercise==='all'
+        ? w.totalVolume
+        : [...byExercise.values()].reduce((sum,e)=>sum+(e.perWorkout.get(w.id)||0),0);
+      months.set(k,(months.get(k)||0)+v);
+    }
+
+    const weeks=new Map();
+    for(const w of workouts){
+      const d=safeDate(w.finishedAt), k=weekKey(d);
+      const v=state.selectedExercise==='all'
+        ? w.totalVolume
+        : [...byExercise.values()].reduce((sum,e)=>sum+(e.perWorkout.get(w.id)||0),0);
+      weeks.set(k,(weeks.get(k)||0)+v);
+    }
+
+    let prevVolume=0,prevWorkoutCount=0;
+    if(cutoff){
+      const spanDays=Number(state.statsRange);
+      const prevEnd=new Date(cutoff);prevEnd.setMilliseconds(-1);
+      const prevStart=new Date(cutoff);prevStart.setDate(prevStart.getDate()-spanDays);
+      const prevWorkouts=a.workouts.filter(w=>{
+        const d=safeDate(w.finishedAt);return d>=prevStart&&d<=prevEnd;
+      });
+      if(state.selectedExercise==='all'){
+        prevVolume=prevWorkouts.reduce((sum,w)=>sum+w.totalVolume,0);
+        prevWorkoutCount=prevWorkouts.length;
+      }else{
+        const prevIds=new Set(prevWorkouts.map(w=>w.id));
+        const prevSets=a.sets.filter(s=>prevIds.has(s.workoutId)&&exerciseKeyForSet(s)===state.selectedExercise);
+        prevVolume=prevSets.reduce((sum,s)=>sum+s.weight*s.reps*(s.factor===2?2:1),0);
+        prevWorkoutCount=new Set(prevSets.map(s=>s.workoutId)).size;
+      }
+    }
+
+    return {
+      maps,workoutById,totalVolume,totalSets,totalReps,bestWorkout,activeDates,byExercise,muscle,months,weeks,
+      workoutCount:workouts.length,
+      averageWorkout:workouts.length?totalVolume/workouts.length:0,
+      averageSets:workouts.length?totalSets/workouts.length:0,
+      prevVolume,prevWorkoutCount
+    };
+  }
+
+  function renderBars(map,count=12,labelMode='month'){
+    const entries=[...map.entries()].sort((a,b)=>a[0].localeCompare(b[0])).slice(-count);
+    if(!entries.length) return '<div class="empty">Данных нет.</div>';
+    const max=Math.max(1,...entries.map(x=>x[1]));
+    return `<div class="chart">${entries.map(([k,v])=>{
+      const label=labelMode==='month'
+        ? new Intl.DateTimeFormat('ru-RU',{month:'short'}).format(new Date(Number(k.slice(0,4)),Number(k.slice(5,7))-1,1))
+        : fmtShortDate(k);
+      return `<div class="bar-wrap" title="${esc(k)} · ${esc(fmtWeight(v))}">
+        <div class="bar-value">${v?esc(fmtWeight(v)):''}</div>
+        <div class="bar" style="height:${Math.max(2,(v/max)*170)}px"></div>
+        <div class="bar-label">${esc(label)}</div>
+      </div>`;
+    }).join('')}</div>`;
+  }
+
+  function renderHeatmap(a){
+    const end=startOfLocalDay(new Date());
+    const start=addDays(end,-90);
+    const daily=new Map();
+    for(const w of a.workouts){
+      const d=safeDate(w.finishedAt);
+      if(d<start||d>end) continue;
+      const k=dateKey(d);daily.set(k,(daily.get(k)||0)+w.totalVolume);
+    }
+    const max=Math.max(1,...daily.values());
+    const startMonday=startOfIsoWeek(start);
+    const weeks=[];
+    for(let wi=0;wi<13;wi++){
+      const cells=[];
+      for(let di=0;di<7;di++){
+        const d=addDays(startMonday,wi*7+di), k=dateKey(d), v=daily.get(k)||0;
+        let level='';
+        if(v>0){
+          const r=v/max;
+          level=r>.72?'l4':r>.42?'l3':r>.18?'l2':'l1';
+        }
+        const out=d<start||d>end;
+        cells.push(`<div class="heat-day ${out?'':level}" title="${k}${v?' · '+fmtWeight(v):''}" style="${out?'opacity:.2':''}"></div>`);
+      }
+      weeks.push(`<div class="heat-week">${cells.join('')}</div>`);
+    }
+    return `<div class="heatmap">${weeks.join('')}</div>
+      <div class="heat-legend">меньше
+        <span class="legend-cell" style="background:#12161b"></span>
+        <span class="legend-cell" style="background:#2f343a"></span>
+        <span class="legend-cell" style="background:#555d65"></span>
+        <span class="legend-cell" style="background:#8f969e"></span>
+        <span class="legend-cell" style="background:#e4e8eb"></span> больше
+      </div>`;
+  }
+
+  function renderHorizontalBars(entries,total){
+    if(!entries.length) return '<div class="empty">Данных нет.</div>';
+    const max=Math.max(1,...entries.map(x=>x[1]));
+    return `<div class="hbar-list">${entries.map(([name,v])=>`
+      <div class="hbar-row">
+        <div class="hbar-name" title="${esc(name)}">${esc(name)}</div>
+        <div class="hbar-track"><div class="hbar-fill" style="width:${(v/max)*100}%"></div></div>
+        <div class="hbar-value">${esc(fmtWeight(v))}</div>
+      </div>`).join('')}</div>`;
+  }
+
+  function renderSparkline(points){
+    if(!points.length) return '<div class="empty">Нет истории.</div>';
+    const values=points.map(p=>p.volume);
+    const max=Math.max(1,...values),min=Math.min(0,...values);
+    const W=900,H=140,pad=10;
+    const coords=points.map((p,i)=>{
+      const x=points.length===1?W/2:pad+i*(W-2*pad)/(points.length-1);
+      const y=H-pad-((p.volume-min)/(max-min||1))*(H-2*pad);
+      return [x,y,p];
+    });
+    const poly=coords.map(c=>`${c[0]},${c[1]}`).join(' ');
+    return `<div class="sparkline"><svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">
+      <line class="sparkline-grid" x1="0" y1="${H-10}" x2="${W}" y2="${H-10}"></line>
+      <polyline class="sparkline-line" points="${poly}"></polyline>
+      ${coords.map(c=>`<circle class="sparkline-dot" cx="${c[0]}" cy="${c[1]}" r="3"><title>${esc(fmtShortDate(c[2].date))} · ${esc(fmtWeight(c[2].volume))}</title></circle>`).join('')}
+    </svg></div>`;
+  }
+
+  function renderStatsLegacy(){
+    const root=$('#statsRoot');
+    if(!root) return;
+    if(!state.analytics){
+      root.innerHTML=`<div class="stats-empty"><strong>ДАННЫЕ НЕ ЗАГРУЖЕНЫ</strong>
+        На телефоне нажми «ВЫГРУЗИТЬ БАЗУ ДЛЯ ПК» и открой здесь файл .tonnage-db.</div>`;
+      return;
+    }
