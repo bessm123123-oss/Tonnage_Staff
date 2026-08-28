@@ -1,0 +1,160 @@
+      { name: '6–8', min: 6, max: 8, sets: 0, volume: 0 },
+      { name: '9–12', min: 9, max: 12, sets: 0, volume: 0 },
+      { name: '13–20', min: 13, max: 20, sets: 0, volume: 0 },
+      { name: '21+', min: 21, max: Infinity, sets: 0, volume: 0 }
+    ];
+    const maxOneRepByKey = new Map(exerciseSummaries.map(item => [item.key, item.estimated1RM]));
+    const intensityZones = [
+      { name: '<50% e1RM', min: 0, max: 50, sets: 0, volume: 0 },
+      { name: '50–69%', min: 50, max: 70, sets: 0, volume: 0 },
+      { name: '70–84%', min: 70, max: 85, sets: 0, volume: 0 },
+      { name: '85%+', min: 85, max: Infinity, sets: 0, volume: 0 }
+    ];
+    for (const set of sets) {
+      const repZone = repZones.find(zone => set.reps >= zone.min && set.reps <= zone.max);
+      if (repZone) { repZone.sets += 1; repZone.volume += set.volume; }
+      const estimatedMax = maxOneRepByKey.get(set.key) || 0;
+      const percentage = estimatedMax > 0 ? set.weight / estimatedMax * 100 : 0;
+      const intensityZone = intensityZones.find(zone => percentage >= zone.min && percentage < zone.max);
+      if (intensityZone) { intensityZone.sets += 1; intensityZone.volume += set.volume; }
+    }
+
+    const trendAnchor = localDay(now);
+    const currentStart = new Date(trendAnchor); currentStart.setDate(currentStart.getDate() - 27);
+    const previousStart = new Date(trendAnchor); previousStart.setDate(previousStart.getDate() - 55);
+    const previousEnd = new Date(currentStart); previousEnd.setDate(previousEnd.getDate() - 1); previousEnd.setHours(23, 59, 59, 999);
+    let currentFourWeeks = 0;
+    let previousFourWeeks = 0;
+    for (const set of normalizedSets) {
+      const finished = set.workout?.finished;
+      if (!finished) continue;
+      if (finished >= currentStart && finished <= now) currentFourWeeks += set.volume;
+      else if (finished >= previousStart && finished <= previousEnd) previousFourWeeks += set.volume;
+    }
+
+    const allWorkoutIds = new Set(normalizedWorkouts.map(workout => workout.id));
+    const allSetIds = new Set();
+    const allWorkoutIdList = new Set();
+    let duplicateSetIds = 0;
+    let invalidSets = 0;
+    let zeroSets = 0;
+    let orphanSets = 0;
+    let unknownExercises = 0;
+    for (const set of normalizedSets) {
+      if (allSetIds.has(set.id)) duplicateSetIds += 1; else allSetIds.add(set.id);
+      if (set.weight < 0 || set.reps < 0 || !Number.isFinite(set.volume)) invalidSets += 1;
+      if (set.weight === 0 || set.reps === 0) zeroSets += 1;
+      if (!allWorkoutIds.has(set.workoutId)) orphanSets += 1;
+      if (set.exerciseId === null || !exerciseById.has(Number(set.exerciseId))) unknownExercises += 1;
+    }
+    let duplicateWorkoutIds = 0;
+    let invalidDates = 0;
+    let futureWorkouts = 0;
+    let storedVolumeMismatches = 0;
+    const volumeByWorkout = new Map();
+    for (const set of normalizedSets) addMap(volumeByWorkout, set.workoutId, set.volume);
+    for (const workout of normalizedWorkouts) {
+      if (allWorkoutIdList.has(workout.id)) duplicateWorkoutIds += 1; else allWorkoutIdList.add(workout.id);
+      if (!workout.finished) invalidDates += 1;
+      else if (workout.finished > new Date(now.getTime() + DAY)) futureWorkouts += 1;
+      const stored = finite(workout.totalVolume);
+      const calculated = volumeByWorkout.get(workout.id) || 0;
+      if (Math.abs(stored - calculated) > Math.max(1, stored * 0.005)) storedVolumeMismatches += 1;
+    }
+
+    const activeDayKeys = [...dayMap.keys()].sort();
+    const streak = streaks(activeDayKeys);
+    const spanDays = firstDate && lastDate ? Math.max(1, Math.round((localDay(lastDate) - localDay(firstDate)) / DAY) + 1) : 0;
+    const spanWeeks = spanDays ? Math.max(1, spanDays / 7) : 0;
+    const workoutVolumes = workoutRows.map(row => row.volume);
+
+    return {
+      options: { range: options.range || 'all', from, to, exercise: selectedExercise, muscle: selectedMuscle, folder: selectedFolder },
+      metrics: {
+        totalVolume,
+        workouts: workoutRows.length,
+        sets: sets.length,
+        reps: totalReps,
+        activeDays: activeDayKeys.length,
+        averageWorkout: workoutRows.length ? totalVolume / workoutRows.length : 0,
+        medianWorkout: median(workoutVolumes),
+        bestWorkout: workoutVolumes.length ? Math.max(...workoutVolumes) : 0,
+        averageSet: sets.length ? totalVolume / sets.length : 0,
+        averageRepsPerSet: sets.length ? totalReps / sets.length : 0,
+        workoutsPerWeek: spanWeeks ? workoutRows.length / spanWeeks : 0,
+        totalDurationMinutes: durations.reduce((sum, value) => sum + value, 0),
+        averageDurationMinutes: durations.length ? durations.reduce((sum, value) => sum + value, 0) / durations.length : 0,
+        density: durations.length ? totalVolume / durations.reduce((sum, value) => sum + value, 0) : 0,
+        firstDate,
+        lastDate,
+        spanDays,
+        ...streak
+      },
+      workouts: workoutRows,
+      sets,
+      daySeries,
+      weekSeries,
+      monthSeries,
+      rollingWeeks,
+      muscleSummaries: rowsFromMap(muscleMap).sort((a, b) => b.value - a.value),
+      folderSummaries: rowsFromMap(folderMap).sort((a, b) => b.value - a.value),
+      exerciseSummaries,
+      weekday,
+      timeOfDay,
+      repZones,
+      intensityZones,
+      trend: { currentFourWeeks, previousFourWeeks, delta: percentDelta(currentFourWeeks, previousFourWeeks) },
+      quality: {
+        invalidDates,
+        futureWorkouts,
+        orphanSets,
+        invalidSets,
+        zeroSets,
+        unknownExercises,
+        storedVolumeMismatches,
+        duplicateSetIds,
+        duplicateWorkoutIds,
+        issueCount: invalidDates + futureWorkouts + orphanSets + invalidSets + storedVolumeMismatches + duplicateSetIds + duplicateWorkoutIds
+      },
+      sourceCounts: { exercises: rawExercises.length, workouts: rawWorkouts.length, sets: rawSets.length }
+    };
+  }
+
+  function csvCell(value) {
+    const text = String(value ?? '');
+    return /[;"\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+  }
+  function setsCsv(model) {
+    const header = ['Дата', 'Начало', 'Тренировка ID', 'Упражнение', 'Группа мышц', 'Папка', 'Подход', 'Вес, кг', 'Повторы', 'Коэффициент', 'Тоннаж, кг', 'Расчётный 1ПМ, кг'];
+    const lines = [header.map(csvCell).join(';')];
+    for (const set of model.sets) {
+      const finished = set.workout?.finished;
+      const started = set.workout?.started;
+      lines.push([
+        finished ? dateKey(finished) : '',
+        started ? started.toISOString() : '',
+        set.workoutId,
+        set.name,
+        set.muscleGroup,
+        set.folderName,
+        set.setNumber,
+        set.weight,
+        set.reps,
+        set.factor,
+        Math.round(set.volume * 100) / 100,
+        Math.round(set.estimated1RM * 100) / 100
+      ].map(csvCell).join(';'));
+    }
+    return lines.join('\r\n');
+  }
+
+  return {
+    buildModel,
+    setsCsv,
+    dateKey,
+    weekKey,
+    monthKey,
+    safeDate,
+    setVolume,
+    estimatedOneRepMax,
+    percentDelta
