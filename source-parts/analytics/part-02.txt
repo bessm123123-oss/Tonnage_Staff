@@ -1,0 +1,160 @@
+      from = safeDate(options.from);
+      to = safeDate(options.to);
+      if (from) from = localDay(from);
+      if (to) { to = localDay(to); to.setHours(23, 59, 59, 999); }
+    } else if (options.range && options.range !== 'all') {
+      const days = Math.max(1, finite(options.range, 0));
+      if (days) {
+        from = localDay(now);
+        from.setDate(from.getDate() - days + 1);
+        to = new Date(now);
+      }
+    }
+
+    const workoutInDateRange = workout => workout.finished && (!from || workout.finished >= from) && (!to || workout.finished <= to);
+    const selectedExercise = options.exercise && options.exercise !== 'all' ? String(options.exercise) : null;
+    const selectedMuscle = options.muscle && options.muscle !== 'all' ? String(options.muscle) : null;
+    const selectedFolder = options.folder && options.folder !== 'all' ? String(options.folder) : null;
+    const matchesSet = set => set.workout && workoutInDateRange(set.workout)
+      && (!selectedExercise || set.key === selectedExercise)
+      && (!selectedMuscle || set.muscleGroup === selectedMuscle)
+      && (!selectedFolder || set.folderName === selectedFolder);
+
+    const sets = normalizedSets.filter(matchesSet);
+    const workoutIds = new Set(sets.map(set => set.workoutId));
+    let workouts = normalizedWorkouts.filter(workoutInDateRange);
+    if (selectedExercise || selectedMuscle || selectedFolder) workouts = workouts.filter(workout => workoutIds.has(workout.id));
+    workouts.sort((a, b) => (a.finished || 0) - (b.finished || 0));
+
+    const setsByWorkout = new Map();
+    for (const set of sets) {
+      if (!setsByWorkout.has(set.workoutId)) setsByWorkout.set(set.workoutId, []);
+      setsByWorkout.get(set.workoutId).push(set);
+    }
+    const workoutRows = workouts.map(workout => {
+      const workoutSets = setsByWorkout.get(workout.id) || [];
+      const volume = workoutSets.reduce((sum, set) => sum + set.volume, 0);
+      const reps = workoutSets.reduce((sum, set) => sum + Math.max(0, set.reps), 0);
+      return {
+        ...workout,
+        sets: workoutSets,
+        volume,
+        reps,
+        exerciseCount: new Set(workoutSets.map(set => set.key)).size,
+        density: workout.durationMinutes > 0 ? volume / workout.durationMinutes : 0
+      };
+    });
+
+    const totalVolume = sets.reduce((sum, set) => sum + set.volume, 0);
+    const totalReps = sets.reduce((sum, set) => sum + Math.max(0, set.reps), 0);
+    const durations = workoutRows.filter(row => row.durationMinutes > 0).map(row => row.durationMinutes);
+    const dayMap = new Map();
+    const weekMap = new Map();
+    const monthMap = new Map();
+    for (const row of workoutRows) {
+      if (!row.finished) continue;
+      addMap(dayMap, dateKey(row.finished), row.volume);
+      addMap(weekMap, weekKey(row.finished), row.volume);
+      addMap(monthMap, monthKey(row.finished), row.volume);
+    }
+    const firstDate = workoutRows.find(row => row.finished)?.finished || null;
+    const lastDate = [...workoutRows].reverse().find(row => row.finished)?.finished || null;
+    const daySeries = fillDailySeries(dayMap, firstDate, lastDate);
+    const weekSeries = fillWeeklySeries(weekMap, firstDate, lastDate);
+    const monthSeries = rowsFromMap(monthMap).sort((a, b) => a.key.localeCompare(b.key));
+    const rollingWeeks = weekSeries.map((row, index) => ({
+      ...row,
+      rolling4: weekSeries.slice(Math.max(0, index - 3), index + 1).reduce((sum, item) => sum + item.value, 0) / Math.min(4, index + 1)
+    }));
+
+    const muscleMap = new Map();
+    const folderMap = new Map();
+    const weekday = [0, 1, 2, 3, 4, 5, 6].map(index => ({ index, volume: 0, workouts: 0 }));
+    const timeOfDay = [
+      { key: 'night', name: 'Ночь · 00–05', volume: 0, workouts: 0 },
+      { key: 'morning', name: 'Утро · 06–11', volume: 0, workouts: 0 },
+      { key: 'day', name: 'День · 12–17', volume: 0, workouts: 0 },
+      { key: 'evening', name: 'Вечер · 18–23', volume: 0, workouts: 0 }
+    ];
+    for (const set of sets) {
+      addMap(muscleMap, set.muscleGroup, set.volume);
+      addMap(folderMap, set.folderName, set.volume);
+    }
+    for (const row of workoutRows) {
+      if (!row.finished) continue;
+      const mondayIndex = (row.finished.getDay() + 6) % 7;
+      weekday[mondayIndex].volume += row.volume;
+      weekday[mondayIndex].workouts += 1;
+      const hour = row.finished.getHours();
+      const bucket = hour < 6 ? 0 : hour < 12 ? 1 : hour < 18 ? 2 : 3;
+      timeOfDay[bucket].volume += row.volume;
+      timeOfDay[bucket].workouts += 1;
+    }
+
+    const summaryByExercise = new Map();
+    for (const set of sets) {
+      if (!summaryByExercise.has(set.key)) {
+        summaryByExercise.set(set.key, {
+          key: set.key,
+          name: set.name,
+          muscleGroup: set.muscleGroup,
+          folderName: set.folderName,
+          volume: 0,
+          sets: 0,
+          reps: 0,
+          workoutIds: new Set(),
+          maxWeight: 0,
+          repsAtMax: 0,
+          estimated1RM: 0,
+          bestSetVolume: 0,
+          bestSessionVolume: 0,
+          prEvents: 0,
+          lastDate: null,
+          sessionVolumes: new Map(),
+          chronological: []
+        });
+      }
+      const item = summaryByExercise.get(set.key);
+      item.volume += set.volume;
+      item.sets += 1;
+      item.reps += Math.max(0, set.reps);
+      item.workoutIds.add(set.workoutId);
+      if (set.weight > item.maxWeight || (set.weight === item.maxWeight && set.reps > item.repsAtMax)) {
+        item.maxWeight = set.weight;
+        item.repsAtMax = set.reps;
+      }
+      item.estimated1RM = Math.max(item.estimated1RM, set.estimated1RM);
+      item.bestSetVolume = Math.max(item.bestSetVolume, set.volume);
+      addMap(item.sessionVolumes, set.workoutId, set.volume);
+      const finished = set.workout?.finished || null;
+      if (finished && (!item.lastDate || finished > item.lastDate)) item.lastDate = finished;
+      item.chronological.push(set);
+    }
+    const exerciseSummaries = [...summaryByExercise.values()].map(item => {
+      item.bestSessionVolume = item.sessionVolumes.size ? Math.max(...item.sessionVolumes.values()) : 0;
+      let record = 0;
+      for (const set of item.chronological.sort((a, b) => (a.workout?.finished || 0) - (b.workout?.finished || 0))) {
+        if (set.estimated1RM > record + 0.001) { item.prEvents += 1; record = set.estimated1RM; }
+      }
+      return {
+        key: item.key,
+        name: item.name,
+        muscleGroup: item.muscleGroup,
+        folderName: item.folderName,
+        volume: item.volume,
+        sets: item.sets,
+        reps: item.reps,
+        workouts: item.workoutIds.size,
+        maxWeight: item.maxWeight,
+        repsAtMax: item.repsAtMax,
+        estimated1RM: item.estimated1RM,
+        bestSetVolume: item.bestSetVolume,
+        bestSessionVolume: item.bestSessionVolume,
+        prEvents: item.prEvents,
+        lastDate: item.lastDate,
+        averageVolumePerWorkout: item.workoutIds.size ? item.volume / item.workoutIds.size : 0
+      };
+    }).sort((a, b) => b.volume - a.volume || a.name.localeCompare(b.name, 'ru'));
+
+    const repZones = [
+      { name: '1–5', min: 1, max: 5, sets: 0, volume: 0 },
