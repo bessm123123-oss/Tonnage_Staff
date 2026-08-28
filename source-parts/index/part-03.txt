@@ -1,0 +1,200 @@
+        <div class="card" id="planEditor"></div>
+      </div>
+    </section>
+
+    <section id="tab-schedule" class="hidden">
+      <div class="card">
+        <div class="schedule-toolbar">
+          <div>
+            <div class="section-title" style="margin:0">ГРАФИК НА 28 ДНЕЙ</div>
+            <div class="split-note">Снятые назначения тоже попадут в пакет как команда удаления.</div>
+          </div>
+          <div class="row">
+            <button class="btn" id="prevWeekBtn">← 7 ДНЕЙ</button>
+            <button class="btn" id="todayBtn">СЕГОДНЯ</button>
+            <button class="btn" id="nextWeekBtn">7 ДНЕЙ →</button>
+          </div>
+        </div>
+      </div>
+      <div class="card"><div id="scheduleTable"></div></div>
+    </section>
+
+    <section id="tab-stats" class="hidden">
+      <div id="statsRoot">
+        <div class="stats-empty">
+          <strong>ДАННЫЕ НЕ ЗАГРУЖЕНЫ</strong>
+          Выгрузи на телефоне «БАЗУ ДЛЯ ПК» и открой файл .tonnage-db.
+        </div>
+      </div>
+    </section>
+
+    <section id="tab-settings" class="hidden">
+      <div class="card">
+        <div class="section-title">НАСТРОЙКИ ШТАБА</div>
+        <div class="split-note">Все параметры локального Windows-прототипа собраны здесь.</div>
+      </div>
+
+      <div class="settings-grid">
+        <div class="card">
+          <div class="section-title">АВТОСОХРАНЕНИЕ</div>
+          <div class="settings-value">ВКЛЮЧЕНО</div>
+          <div class="split-note" style="margin-top:8px">
+            Проект спортсмена, упражнения, папки, планы и график автоматически сохраняются в защищённой папке приложения на этом ноутбуке.
+          </div>
+          <div class="settings-actions">
+            <button class="btn primary" id="saveWorkspaceBtn">СОХРАНИТЬ СЕЙЧАС</button>
+            <button class="btn danger" id="clearWorkspaceBtn">СБРОСИТЬ ЛОКАЛЬНЫЙ ШТАБ</button>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="section-title">ФОРМАТ ОБМЕНА</div>
+          <div class="settings-value">.TONNAGE v2</div>
+          <div class="split-note" style="margin-top:8px">
+            v2 переносит папки вместе с упражнениями, планами и графиком. Старые пакеты v1 по-прежнему открываются.
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="section-title">О ШТАБЕ</div>
+        <div class="split-note">
+          TONNAGE Staff v0.5.0 · локальная работа без сервера · аналитика из .tonnage-db · рабочий проект сохраняется автоматически.
+        </div>
+      </div>
+    </section>
+
+    <section id="tab-about" class="hidden">
+      <div class="grid2">
+        <div class="card">
+          <div class="section-title">ЧТО ПЕРЕДАЁТСЯ</div>
+          <div class="split-note">
+            Папки, упражнения, группы мышц, коэффициент ×1/×2, планы, количество подходов и календарные назначения.
+            Обычный .tonnage переносит только справочник, планы и график. Файл .tonnage-db содержит историю выполненных тренировок для аналитики и на телефон обратно не импортируется.
+          </div>
+        </div>
+        <div class="card">
+          <div class="section-title">КАК ИСПОЛЬЗОВАТЬ</div>
+          <div class="split-note">
+            Для программы другому человеку: заполни «Спортсмен» → создай упражнения, планы и график → сохрани .tonnage → отправь файл → спортсмен импортирует его в установленном мобильном приложении.<br><br>
+            Для статистики: на телефоне «ВЫГРУЗИТЬ БАЗУ ДЛЯ ПК» → открыть .tonnage-db здесь. История на ноуте только читается и анализируется.
+          </div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="section-title">АРХИТЕКТУРА</div>
+        <div class="split-note">
+          Это полноценный офлайн-клиент без сервера и аккаунтов. История хранится в мобильной базе и анализируется здесь только после импорта снимка .tonnage-db. Программа обратно передаётся отдельным безопасным пакетом .tonnage v2.
+        </div>
+      </div>
+    </section>
+  </main>
+</div>
+
+<script src="data-format.js"></script>
+<script src="analytics-core.js"></script>
+<script>
+(() => {
+  const APP_VERSION = 'staff-0.5.0';
+  const state = {
+    projectName: 'Новая программа',
+    recipientName: '',
+    coachName: '',
+    projectNote: '',
+    folders: [],
+    exercises: [],
+    plans: [],
+    schedule: new Map(),
+    originalSchedule: new Map(),
+    originalFolderKeys: new Set(),
+    originalExerciseKeys: new Set(),
+    originalPlanKeys: new Set(),
+    selectedPlanKey: null,
+    cursor: startOfWeek(new Date()),
+    analytics: null,
+    statsRange: 'all',
+    statsFrom: '',
+    statsTo: '',
+    statsView: 'overview',
+    selectedExercise: 'all',
+    selectedMuscle: 'all',
+    selectedFolder: 'all'
+  };
+
+  const WORKSPACE_STORAGE_KEY = 'tonnage-staff-workspace-v1';
+  let autosaveTimer = null;
+
+  function workspaceSnapshot(){
+    return {
+      format:'tonnage-staff-workspace',
+      version:1,
+      savedAt:new Date().toISOString(),
+      projectName:state.projectName,
+      recipientName:state.recipientName,
+      coachName:state.coachName,
+      projectNote:state.projectNote,
+      folders:state.folders,
+      exercises:state.exercises,
+      plans:state.plans,
+      schedule:[...state.schedule.entries()],
+      originalSchedule:[...state.originalSchedule.entries()],
+      originalFolderKeys:[...state.originalFolderKeys],
+      originalExerciseKeys:[...state.originalExerciseKeys],
+      originalPlanKeys:[...state.originalPlanKeys],
+      selectedPlanKey:state.selectedPlanKey,
+      cursor:state.cursor instanceof Date ? state.cursor.toISOString() : state.cursor
+    };
+  }
+
+  function setAutosaveState(text){
+    const el=document.querySelector('#autosaveState');
+    if(el) el.textContent=text;
+  }
+
+  function saveWorkspaceNow(){
+    try{
+      const snapshot=workspaceSnapshot();
+      localStorage.setItem(WORKSPACE_STORAGE_KEY,JSON.stringify(snapshot));
+      window.desktopAPI?.saveWorkspace(snapshot).catch(err=>{
+        console.error('Native workspace autosave:',err);
+        setAutosaveState('ОШИБКА СОХРАНЕНИЯ');
+      });
+      setAutosaveState('СОХРАНЕНО ЛОКАЛЬНО');
+      return true;
+    }catch(err){
+      console.error('Workspace autosave:',err);
+      setAutosaveState('ОШИБКА СОХРАНЕНИЯ');
+      return false;
+    }
+  }
+
+  function queueWorkspaceSave(){
+    setAutosaveState('СОХРАНЕНИЕ…');
+    clearTimeout(autosaveTimer);
+    autosaveTimer=setTimeout(saveWorkspaceNow,180);
+  }
+
+  function clearWorkspaceStorage(){
+    try{
+      localStorage.removeItem(WORKSPACE_STORAGE_KEY);
+      window.desktopAPI?.clearWorkspace().catch(console.error);
+      window.desktopAPI?.clearAnalytics().catch(console.error);
+      setAutosaveState('ПУСТО');
+    }catch(err){
+      console.error(err);
+    }
+  }
+
+  function restoreWorkspace(){
+    try{
+      const desktopSaved=window.desktopAPI?.loadWorkspaceSync?.();
+      const desktopAnalytics=window.desktopAPI?.loadAnalyticsSync?.();
+      const localRaw=localStorage.getItem(WORKSPACE_STORAGE_KEY);
+      const saved=desktopSaved || (localRaw?JSON.parse(localRaw):null);
+      if(!saved){
+        state.analytics=desktopAnalytics&&Array.isArray(desktopAnalytics.workouts)?desktopAnalytics:null;
+        setAutosaveState(state.analytics?'БАЗА ВОССТАНОВЛЕНА':'ПУСТО');
+        return Boolean(state.analytics);
+      }
+      if(!saved || saved.format!=='tonnage-staff-workspace' || saved.version!==1){
+        setAutosaveState('НЕИЗВЕСТНЫЙ ФОРМАТ');
