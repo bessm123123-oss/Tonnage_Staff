@@ -1,0 +1,32 @@
+{
+  "name": "tonnage-staff-desktop",
+  "version": "0.5.0",
+  "description": "TONNAGE Staff — offline Windows planning and workout analytics",
+  "main": "main.js",
+  "author": "TONNAGE",
+  "license": "UNLICENSED",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "test": "node --test test/*.test.js",
+    "dist:win": "electron-builder --win portable --x64"
+  },
+  "devDependencies": {
+    "electron": "44.0.0",
+    "electron-builder": "26.0.20",
+    "jsdom": "26.1.0"
+  },
+  "build": {
+    "appId": "ru.tonnage.staff",
+    "productName": "TONNAGE Staff",
+    "asar": true,
+    "files": ["main.js", "preload.js", "src/**/*", "build/icon.png", "package.json"],
+    "directories": {"output": "dist"},
+    "win": {"icon": "build/icon.png", "signAndEditExecutable": false, "target": [{"target": "portable", "arch": ["x64"]}]},
+    "portable": {"artifactName": "Tonnage-Staff-${version}-Portable.${ext}"},
+    "fileAssociations": [
+      {"ext": "tonnage", "name": "TONNAGE planning package", "description": "Training plan for TONNAGE", "role": "Editor"},
+      {"ext": "tonnage-db", "name": "TONNAGE mobile database", "description": "Workout database exported from TONNAGE", "role": "Viewer"}
+    ]
+  }
+}
