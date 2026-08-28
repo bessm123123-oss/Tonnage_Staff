@@ -31,3 +31,7 @@ Thumbs.db
 *.tmp
 *.swp
 *.swo
+
+# Generated from source-parts/
+src/index.html
+src/analytics-core.js
