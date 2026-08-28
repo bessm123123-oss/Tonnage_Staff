@@ -1,0 +1,200 @@
+  }
+  function trendText(trend){
+    if(trend.delta===null) return '<span class="delta-up">новая нагрузка против прошлых 4 недель</span>';
+    const cls=trend.delta>0.5?'delta-up':trend.delta<-0.5?'delta-down':'delta-flat';
+    return `<span class="${cls}">${trend.delta>0?'+':''}${fmtDecimal(trend.delta)}% к предыдущим 4 неделям</span>`;
+  }
+  function statsOverview(model){
+    const m=model.metrics;
+    const recent=[...model.workouts].reverse().slice(0,15);
+    return `
+      <div class="metric-grid wide">
+        ${metricCard('ТОННАЖ',fmtWeight(m.totalVolume),trendText(model.trend))}
+        ${metricCard('ТРЕНИРОВКИ',fmtNum(m.workouts),`${fmtDecimal(m.workoutsPerWeek,2)} в неделю`) }
+        ${metricCard('ПОДХОДЫ',fmtNum(m.sets),`${fmtDecimal(m.averageRepsPerSet)} повтора в среднем`) }
+        ${metricCard('ПОВТОРЫ',fmtNum(m.reps),`${fmtNum(m.activeDays)} активных дней`) }
+        ${metricCard('СРЕДНЯЯ ТРЕНИРОВКА',fmtWeight(m.averageWorkout),`медиана ${fmtWeight(m.medianWorkout)}`)}
+        ${metricCard('ЛУЧШАЯ ТРЕНИРОВКА',fmtWeight(m.bestWorkout),`средний подход ${fmtWeight(m.averageSet)}`)}
+        ${metricCard('СРЕДНЯЯ ДЛИТЕЛЬНОСТЬ',fmtDuration(m.averageDurationMinutes),`всего ${fmtDuration(m.totalDurationMinutes)}`)}
+        ${metricCard('ПЛОТНОСТЬ',`${fmtDecimal(m.density)} кг/мин`,'только тренировки с корректным временем')}
+      </div>
+      <div class="analytics-grid">
+        <div class="card"><div class="section-title">НАГРУЗКА ПО НЕДЕЛЯМ · ДО 26 НЕДЕЛЬ</div><div class="chart-scroll">${statsSeriesBars(model.rollingWeeks)}</div></div>
+        <div class="card"><div class="section-title">ГРУППЫ МЫШЦ</div>${statsHbars(model.muscleSummaries.slice(0,12))}</div>
+      </div>
+      <div class="analytics-grid">
+        <div class="card"><div class="section-title">ТОП УПРАЖНЕНИЙ ПО ТОННАЖУ</div>${statsHbars(model.exerciseSummaries.slice(0,12),'volume')}</div>
+        <div class="card"><div class="section-title">ПАПКИ / БЛОКИ</div>${statsHbars(model.folderSummaries.slice(0,12))}</div>
+      </div>
+      <div class="card"><div class="section-title">ПОСЛЕДНИЕ ТРЕНИРОВКИ</div><div style="overflow:auto"><table><thead><tr><th>ДАТА</th><th>ТОННАЖ</th><th>ПОДХОДЫ</th><th>ПОВТОРЫ</th><th>УПРАЖНЕНИЯ</th><th>ВРЕМЯ</th><th>ПЛОТНОСТЬ</th></tr></thead><tbody>
+        ${recent.length?recent.map(row=>`<tr><td>${esc(fmtShortDate(row.finished))}</td><td>${esc(fmtWeight(row.volume))}</td><td>${fmtNum(row.sets.length)}</td><td>${fmtNum(row.reps)}</td><td>${fmtNum(row.exerciseCount)}</td><td>${row.durationMinutes?esc(fmtDuration(row.durationMinutes)):'—'}</td><td>${row.density?`${fmtDecimal(row.density)} кг/мин`:'—'}</td></tr>`).join(''):'<tr><td colspan="7" class="muted">Нет тренировок в выбранном диапазоне.</td></tr>'}
+      </tbody></table></div></div>`;
+  }
+  function statsProgress(model){
+    const records=[...model.exerciseSummaries].sort((a,b)=>b.estimated1RM-a.estimated1RM);
+    const mostRecent=records.filter(row=>row.lastDate).sort((a,b)=>b.lastDate-a.lastDate)[0];
+    return `
+      <div class="metric-grid wide">
+        ${metricCard('4 НЕДЕЛИ',fmtWeight(model.trend.currentFourWeeks),trendText(model.trend))}
+        ${metricCard('ПР-СОБЫТИЯ',fmtNum(records.reduce((sum,row)=>sum+row.prEvents,0)),'новые расчётные максимумы по хронологии')}
+        ${metricCard('УПРАЖНЕНИЯ',fmtNum(records.length),mostRecent?`последнее: ${esc(mostRecent.name)}`:'нет данных')}
+        ${metricCard('ЛУЧШИЙ e1RM',records[0]?`${fmtDecimal(records[0].estimated1RM)} кг`:'—',records[0]?esc(records[0].name):'нет данных')}
+      </div>
+      <div class="card"><div class="section-title">НАГРУЗКА И СКОЛЬЗЯЩАЯ СРЕДНЯЯ</div><div class="split-note">Наведи курсор на неделю: во всплывающей подсказке показана средняя нагрузка за 4 недели.</div><div class="chart-scroll">${statsSeriesBars(model.rollingWeeks,40)}</div></div>
+      <div class="analytics-grid">
+        <div class="card"><div class="section-title">ДИАПАЗОНЫ ПОВТОРОВ</div>${statsHbars(model.repZones,'sets',v=>`${fmtNum(v)} подх.`)}</div>
+        <div class="card"><div class="section-title">ИНТЕНСИВНОСТЬ ОТ РАСЧЁТНОГО 1ПМ</div><div class="split-note">Оценка по формуле Эпли; это ориентир, не фактический тест 1ПМ.</div>${statsHbars(model.intensityZones,'sets',v=>`${fmtNum(v)} подх.`)}</div>
+      </div>
+      <div class="card"><div class="section-title">ПРОГРЕСС ПО УПРАЖНЕНИЯМ</div><div style="overflow:auto"><table class="record-table"><thead><tr><th>УПРАЖНЕНИЕ</th><th>ТОННАЖ</th><th>ТРЕНИРОВОК</th><th>МАКС. ВЕС</th><th>e1RM</th><th>ЛУЧШИЙ ПОДХОД</th><th>ЛУЧШАЯ СЕССИЯ</th><th>ПР</th><th>ПОСЛЕДНИЙ РАЗ</th></tr></thead><tbody>
+        ${records.length?records.map(row=>`<tr><td><strong>${esc(row.name)}</strong><div class="tiny">${esc(row.muscleGroup)} · ${esc(row.folderName)}</div></td><td>${esc(fmtWeight(row.volume))}</td><td>${fmtNum(row.workouts)}</td><td>${fmtDecimal(row.maxWeight)} × ${fmtNum(row.repsAtMax)}</td><td>${fmtDecimal(row.estimated1RM)} кг</td><td>${esc(fmtWeight(row.bestSetVolume))}</td><td>${esc(fmtWeight(row.bestSessionVolume))}</td><td>${fmtNum(row.prEvents)}</td><td>${esc(fmtShortDate(row.lastDate))}</td></tr>`).join(''):'<tr><td colspan="9" class="muted">Нет данных.</td></tr>'}
+      </tbody></table></div></div>`;
+  }
+  function statsConsistency(model){
+    const m=model.metrics;
+    const weekdayNames=['Понедельник','Вторник','Среда','Четверг','Пятница','Суббота','Воскресенье'];
+    const weekdayRows=model.weekday.map((row,index)=>({name:weekdayNames[index],value:row.workouts,volume:row.volume}));
+    return `
+      <div class="metric-grid wide">
+        ${metricCard('АКТИВНЫЕ ДНИ',fmtNum(m.activeDays),m.spanDays?`${m.spanDays} дней между первой и последней тренировкой`:'нет периода')}
+        ${metricCard('ЛУЧШАЯ СЕРИЯ',`${fmtNum(m.best)} дн.`,'тренировки в последовательные дни')}
+        ${metricCard('ТЕКУЩАЯ СЕРИЯ',`${fmtNum(m.current)} дн.`,'на конце выбранного диапазона')}
+        ${metricCard('СРЕДНИЙ ПЕРЕРЫВ',`${fmtDecimal(m.averageGap)} дн.`,`максимальный ${fmtNum(m.maxGap)} дн.`)}
+      </div>
+      <div class="card"><div class="section-title">КАЛЕНДАРЬ АКТИВНОСТИ · ПОСЛЕДНИЕ 13 НЕДЕЛЬ В ДАННЫХ</div>${modelHeatmap(model)}</div>
+      <div class="analytics-grid">
+        <div class="card"><div class="section-title">ТРЕНИРОВКИ ПО ДНЯМ НЕДЕЛИ</div>${statsHbars(weekdayRows,'value',v=>`${fmtNum(v)} тр.`)}</div>
+        <div class="card"><div class="section-title">ВРЕМЯ ЗАВЕРШЕНИЯ</div>${statsHbars(model.timeOfDay.map(row=>({...row,value:row.workouts})),'value',v=>`${fmtNum(v)} тр.`)}</div>
+      </div>
+      <div class="card"><div class="section-title">ТОННАЖ ПО МЕСЯЦАМ</div><div class="chart-scroll">${statsSeriesBars(model.monthSeries,36)}</div></div>`;
+  }
+  function statsRecords(model){
+    const records=[...model.exerciseSummaries].sort((a,b)=>b.maxWeight-a.maxWeight||b.estimated1RM-a.estimated1RM);
+    return `<div class="card"><div class="section-title">ЛИЧНЫЕ РЕКОРДЫ И ОБЪЁМ</div><div class="split-note">e1RM — расчётный одноповторный максимум по формуле Эпли. Коэффициент ×2 учитывается в тоннаже, но не удваивает рабочий вес.</div><div style="overflow:auto;margin-top:12px"><table class="record-table"><thead><tr><th>#</th><th>УПРАЖНЕНИЕ</th><th>МАКС. ВЕС</th><th>ПОВТОРЫ С НИМ</th><th>e1RM</th><th>ВСЕГО ПОДХОДОВ</th><th>ВСЕГО ПОВТОРОВ</th><th>ТОННАЖ</th><th>СРЕДНЕЕ / ТРЕНИРОВКУ</th></tr></thead><tbody>
+      ${records.length?records.map((row,index)=>`<tr><td>${index+1}</td><td><strong>${esc(row.name)}</strong><div class="tiny">${esc(row.muscleGroup)}</div></td><td>${fmtDecimal(row.maxWeight)} кг</td><td>${fmtNum(row.repsAtMax)}</td><td>${fmtDecimal(row.estimated1RM)} кг</td><td>${fmtNum(row.sets)}</td><td>${fmtNum(row.reps)}</td><td>${esc(fmtWeight(row.volume))}</td><td>${esc(fmtWeight(row.averageVolumePerWorkout))}</td></tr>`).join(''):'<tr><td colspan="9" class="muted">Нет данных.</td></tr>'}
+      </tbody></table></div></div>`;
+  }
+  function statsHistory(model){
+    const rows=[...model.workouts].reverse().slice(0,250);
+    return `<div class="card"><div class="between"><div><div class="section-title" style="margin:0">ИСТОРИЯ ТРЕНИРОВОК</div><div class="split-note">Показано до 250 последних записей выбранного среза.</div></div><button class="btn" id="historyCsvBtn">CSV ПО ПОДХОДАМ</button></div><div style="overflow:auto;margin-top:12px"><table><thead><tr><th>ДАТА</th><th>НАЧАЛО</th><th>ТОННАЖ</th><th>ПОДХОДЫ</th><th>ПОВТОРЫ</th><th>УПРАЖНЕНИЯ</th><th>ДЛИТЕЛЬНОСТЬ</th><th>КГ/МИН</th></tr></thead><tbody>
+      ${rows.length?rows.map(row=>`<tr><td>${esc(fmtShortDate(row.finished))}</td><td>${row.started?esc(new Intl.DateTimeFormat('ru-RU',{hour:'2-digit',minute:'2-digit'}).format(row.started)):'—'}</td><td>${esc(fmtWeight(row.volume))}</td><td>${fmtNum(row.sets.length)}</td><td>${fmtNum(row.reps)}</td><td>${fmtNum(row.exerciseCount)}</td><td>${row.durationMinutes?esc(fmtDuration(row.durationMinutes)):'—'}</td><td>${row.density?fmtDecimal(row.density):'—'}</td></tr>`).join(''):'<tr><td colspan="8" class="muted">Нет тренировок.</td></tr>'}
+      </tbody></table></div></div>`;
+  }
+  function statsQuality(model){
+    const q=model.quality;
+    const checks=[
+      ['Некорректные даты',q.invalidDates],['Будущие даты',q.futureWorkouts],['Подходы без тренировки',q.orphanSets],
+      ['Некорректные значения',q.invalidSets],['Нулевые подходы',q.zeroSets],['Архивные упражнения',q.unknownExercises],
+      ['Расхождения тоннажа',q.storedVolumeMismatches],['Дубли ID подходов',q.duplicateSetIds],['Дубли ID тренировок',q.duplicateWorkoutIds]
+    ];
+    return `<div class="metric-grid wide">${metricCard('ЗАПИСИ БАЗЫ',fmtNum(model.sourceCounts.workouts),'тренировки')}${metricCard('ПОДХОДЫ БАЗЫ',fmtNum(model.sourceCounts.sets),'исходные строки')}${metricCard('УПРАЖНЕНИЯ БАЗЫ',fmtNum(model.sourceCounts.exercises),'активный справочник')}${metricCard('КРИТИЧЕСКИЕ ПРОБЛЕМЫ',fmtNum(q.issueCount),q.issueCount?'<span class="delta-down">стоит проверить экспорт</span>':'<span class="delta-up">явных проблем нет</span>')}</div>
+      <div class="card"><div class="section-title">КОНТРОЛЬ КАЧЕСТВА ДАННЫХ</div><div class="split-note">Нулевой подход и архивное упражнение показаны отдельно: они могут быть допустимыми, поэтому не всегда считаются критической ошибкой.</div><div class="quality-grid">${checks.map(([name,value])=>`<div class="quality-item ${value?'issue':''}"><span class="tiny">${esc(name.toUpperCase())}</span><strong>${fmtNum(value)}</strong></div>`).join('')}</div></div>
+      <div class="card"><div class="section-title">ЧТО НЕЛЬЗЯ ПОСЧИТАТЬ ЧЕСТНО</div><div class="split-note">В мобильной базе нет RPE/RIR, пульса, сна, массы тела, калорий и самочувствия. Поэтому клиент не выдумывает восстановление, готовность или расход энергии. Всё показанное здесь считается только из дат, веса, повторов, коэффициента и времени тренировки.</div></div>`;
+  }
+  function statsViewBody(model){
+    if(state.statsView==='progress') return statsProgress(model);
+    if(state.statsView==='consistency') return statsConsistency(model);
+    if(state.statsView==='records') return statsRecords(model);
+    if(state.statsView==='history') return statsHistory(model);
+    if(state.statsView==='quality') return statsQuality(model);
+    return statsOverview(model);
+  }
+  function statsModel(){
+    return TonnageAnalytics.buildModel(state.analytics,{
+      range:state.statsRange,from:state.statsFrom,to:state.statsTo,
+      exercise:state.selectedExercise,muscle:state.selectedMuscle,folder:state.selectedFolder
+    });
+  }
+  function statsFilename(ext){
+    const who=TonnageFormat.safeFilename(state.recipientName||'workouts','workouts');
+    return `tonnage-${who}-${new Date().toISOString().slice(0,10)}.${ext}`;
+  }
+  async function exportStatsCsv(){
+    if(!lastStatsModel) return;
+    const text=TonnageAnalytics.setsCsv(lastStatsModel);
+    if(window.desktopAPI){
+      const saved=await window.desktopAPI.saveCsvFile(text,statsFilename('csv'));
+      if(saved) setStatus(`CSV сохранён: ${saved.name}`,'ok');
+    }else downloadText(text,statsFilename('csv'),'text/csv;charset=utf-8');
+  }
+  async function printStatsPdf(){
+    if(!state.analytics) return;
+    if(window.desktopAPI){
+      const saved=await window.desktopAPI.printPdf(statsFilename('pdf'));
+      if(saved) setStatus(`PDF-отчёт сохранён: ${saved.name}`,'ok');
+    }else window.print();
+  }
+  function renderStats(){
+    const root=$('#statsRoot');
+    if(!root) return;
+    if(!state.analytics){
+      lastStatsModel=null;
+      root.innerHTML='<div class="stats-empty"><strong>ДАННЫЕ НЕ ЗАГРУЖЕНЫ</strong>На телефоне нажми «ВЫГРУЗИТЬ БАЗУ ДЛЯ ПК» и открой здесь файл .tonnage-db.</div>';
+      return;
+    }
+    const optionModel=TonnageAnalytics.buildModel(state.analytics,{range:'all'});
+    const exerciseOptions=[...optionModel.exerciseSummaries].sort((a,b)=>a.name.localeCompare(b.name,'ru'));
+    const muscles=[...new Set(exerciseOptions.map(row=>row.muscleGroup))].sort((a,b)=>a.localeCompare(b,'ru'));
+    const folders=[...new Set(exerciseOptions.map(row=>row.folderName))].sort((a,b)=>a.localeCompare(b,'ru'));
+    const validExercise=new Set(exerciseOptions.map(row=>row.key));
+    if(state.selectedExercise!=='all'&&!validExercise.has(state.selectedExercise)) state.selectedExercise='all';
+    const model=statsModel();
+    lastStatsModel=model;
+    const views=[['overview','ОБЗОР'],['progress','ПРОГРЕСС'],['consistency','РЕГУЛЯРНОСТЬ'],['records','РЕКОРДЫ'],['history','ИСТОРИЯ'],['quality','КАЧЕСТВО ДАННЫХ']];
+    root.innerHTML=`
+      <div class="print-only"><h2>TONNAGE · ${esc(state.recipientName||'Отчёт тренировок')}</h2><p>${esc(state.projectName||'')}</p></div>
+      <div class="card"><div class="stats-toolbar"><div><div class="section-title" style="margin-bottom:4px">РАСШИРЕННАЯ СТАТИСТИКА</div><div class="split-note">Снимок базы: ${esc(fmtShortDate(state.analytics.createdAt))}. Фильтры применяются ко всем метрикам и выгрузке CSV.</div></div><div class="row"><button class="btn" id="statsCsvBtn">CSV</button><button class="btn" id="statsPdfBtn">PDF</button></div></div>
+        <div class="stats-filter-grid" style="margin-top:14px">
+          <div><label>ПЕРИОД</label><select id="statsRange" style="margin-top:6px"><option value="all"${state.statsRange==='all'?' selected':''}>Вся история</option><option value="7"${state.statsRange==='7'?' selected':''}>7 дней</option><option value="30"${state.statsRange==='30'?' selected':''}>30 дней</option><option value="90"${state.statsRange==='90'?' selected':''}>90 дней</option><option value="180"${state.statsRange==='180'?' selected':''}>180 дней</option><option value="365"${state.statsRange==='365'?' selected':''}>365 дней</option><option value="custom"${state.statsRange==='custom'?' selected':''}>Свои даты</option></select></div>
+          <div><label>УПРАЖНЕНИЕ</label><select id="statsExercise" style="margin-top:6px"><option value="all">Все упражнения</option>${exerciseOptions.map(row=>`<option value="${esc(row.key)}"${state.selectedExercise===row.key?' selected':''}>${esc(row.name)}</option>`).join('')}</select></div>
+          <div><label>ГРУППА МЫШЦ</label><select id="statsMuscle" style="margin-top:6px"><option value="all">Все группы</option>${muscles.map(value=>`<option value="${esc(value)}"${state.selectedMuscle===value?' selected':''}>${esc(value)}</option>`).join('')}</select></div>
+          <div><label>ПАПКА</label><select id="statsFolder" style="margin-top:6px"><option value="all">Все папки</option>${folders.map(value=>`<option value="${esc(value)}"${state.selectedFolder===value?' selected':''}>${esc(value)}</option>`).join('')}</select></div>
+        </div>
+        <div id="customDates" class="row ${state.statsRange==='custom'?'':'hidden'}" style="margin-top:10px"><div style="flex:1"><label>С</label><input type="date" id="statsFrom" value="${esc(state.statsFrom)}" style="margin-top:6px"></div><div style="flex:1"><label>ПО</label><input type="date" id="statsTo" value="${esc(state.statsTo)}" style="margin-top:6px"></div></div>
+        <div class="stats-nav">${views.map(([key,label])=>`<button data-stats-view="${key}" class="${state.statsView===key?'active':''}">${label}</button>`).join('')}</div>
+      </div>${statsViewBody(model)}`;
+    $('#statsRange')?.addEventListener('change',event=>{state.statsRange=event.target.value;renderStats()});
+    $('#statsExercise')?.addEventListener('change',event=>{state.selectedExercise=event.target.value;renderStats()});
+    $('#statsMuscle')?.addEventListener('change',event=>{state.selectedMuscle=event.target.value;renderStats()});
+    $('#statsFolder')?.addEventListener('change',event=>{state.selectedFolder=event.target.value;renderStats()});
+    $('#statsFrom')?.addEventListener('change',event=>{state.statsFrom=event.target.value;renderStats()});
+    $('#statsTo')?.addEventListener('change',event=>{state.statsTo=event.target.value;renderStats()});
+    root.querySelectorAll('[data-stats-view]').forEach(button=>button.addEventListener('click',()=>{state.statsView=button.dataset.statsView;renderStats()}));
+    $('#statsCsvBtn')?.addEventListener('click',()=>exportStatsCsv().catch(error=>{console.error(error);setStatus('Не удалось сохранить CSV.','bad')}));
+    $('#historyCsvBtn')?.addEventListener('click',()=>exportStatsCsv().catch(console.error));
+    $('#statsPdfBtn')?.addEventListener('click',()=>printStatsPdf().catch(error=>{console.error(error);setStatus('Не удалось сохранить PDF.','bad')}));
+  }
+
+  function activateTab(tab){
+    $$('.nav button').forEach(x=>x.classList.toggle('active',x.dataset.tab===tab));
+    ['client','exercises','plans','schedule','stats','settings','about'].forEach(t=>$('#tab-'+t)?.classList.toggle('hidden',t!==tab));
+    $('#pageTitle').textContent=({client:'Спортсмен',exercises:'Железо',plans:'Планы',schedule:'График',stats:'Статистика',settings:'Настройки',about:'О пакете'})[tab]||'TONNAGE';
+    if(tab==='client') renderClient();
+    if(tab==='stats') renderStats();
+  }
+
+  function renderAll(){
+    renderClient(); renderExercises(); renderPlans(); renderSchedule(); renderStats();
+  }
+
+  function downloadText(text,filename,mime='application/json'){
+    const blob=new Blob([text],{type:mime});
+    const link=document.createElement('a');
+    link.href=URL.createObjectURL(blob);link.download=filename;link.click();
+    setTimeout(()=>URL.revokeObjectURL(link.href),1000);
+  }
+  function planningFilename(){
+    const athlete=TonnageFormat.safeFilename(state.recipientName,'спортсмен');
+    const project=TonnageFormat.safeFilename(state.projectName,'программа');
+    return `tonnage-${athlete}-${project}-${new Date().toISOString().slice(0,10)}.tonnage`;
+  }
+  async function savePlanning(){
+    const payload=currentPackage();
+    const text=JSON.stringify(payload,null,2);
+    const filename=planningFilename();
+    if(window.desktopAPI){
+      const saved=await window.desktopAPI.savePlanningFile(text,filename);
+      if(!saved) return null;
+      setStatus(`Программа сохранена: ${saved.name} · ${payload.data.exercises.length} упражнений · ${payload.data.plans.length} планов · ${payload.data.schedule.length} назначений.`,'ok');
+      return saved;
+    }
+    downloadText(text,filename);
