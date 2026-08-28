@@ -1,0 +1,160 @@
+(function (root, factory) {
+  const api = factory();
+  if (typeof module === 'object' && module.exports) module.exports = api;
+  else root.TonnageAnalytics = api;
+})(typeof globalThis !== 'undefined' ? globalThis : this, function () {
+  'use strict';
+
+  const DAY = 86400000;
+
+  function finite(value, fallback = 0) {
+    const number = Number(value);
+    return Number.isFinite(number) ? number : fallback;
+  }
+  function safeDate(value) {
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? null : date;
+  }
+  function localDay(date) {
+    const result = new Date(date);
+    result.setHours(0, 0, 0, 0);
+    return result;
+  }
+  function dateKey(date) {
+    const y = date.getFullYear();
+    const m = String(date.getMonth() + 1).padStart(2, '0');
+    const d = String(date.getDate()).padStart(2, '0');
+    return `${y}-${m}-${d}`;
+  }
+  function startOfWeek(date) {
+    const result = localDay(date);
+    result.setDate(result.getDate() - ((result.getDay() + 6) % 7));
+    return result;
+  }
+  function weekKey(date) { return dateKey(startOfWeek(date)); }
+  function monthKey(date) { return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`; }
+  function median(values) {
+    if (!values.length) return 0;
+    const sorted = [...values].sort((a, b) => a - b);
+    const middle = Math.floor(sorted.length / 2);
+    return sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2;
+  }
+  function percentDelta(current, previous) {
+    if (!previous) return current ? null : 0;
+    return ((current - previous) / previous) * 100;
+  }
+  function estimatedOneRepMax(weight, reps) {
+    const w = finite(weight);
+    const r = finite(reps);
+    if (w <= 0 || r <= 0) return 0;
+    if (r === 1) return w;
+    return w * (1 + Math.min(r, 30) / 30);
+  }
+  function setVolume(set) {
+    const weight = Math.max(0, finite(set.weight));
+    const reps = Math.max(0, finite(set.reps));
+    const factor = finite(set.factor) === 2 ? 2 : 1;
+    return weight * reps * factor;
+  }
+  function setKey(set) {
+    if (set.exerciseId !== null && set.exerciseId !== undefined && Number.isFinite(Number(set.exerciseId))) return `id:${Number(set.exerciseId)}`;
+    return `name:${String(set.exerciseName || 'Без названия').trim().toLocaleLowerCase('ru')}`;
+  }
+  function addMap(map, key, value) { map.set(key, (map.get(key) || 0) + value); }
+  function rowsFromMap(map) { return [...map.entries()].map(([key, value]) => ({ key, value })); }
+  function fillDailySeries(map, first, last) {
+    if (!first || !last) return [];
+    const output = [];
+    const cursor = localDay(first);
+    const end = localDay(last);
+    while (cursor <= end && output.length < 4000) {
+      const key = dateKey(cursor);
+      output.push({ key, date: new Date(cursor), value: map.get(key) || 0 });
+      cursor.setDate(cursor.getDate() + 1);
+    }
+    return output;
+  }
+  function fillWeeklySeries(map, first, last) {
+    if (!first || !last) return [];
+    const output = [];
+    const cursor = startOfWeek(first);
+    const end = startOfWeek(last);
+    while (cursor <= end && output.length < 700) {
+      const key = dateKey(cursor);
+      output.push({ key, date: new Date(cursor), value: map.get(key) || 0 });
+      cursor.setDate(cursor.getDate() + 7);
+    }
+    return output;
+  }
+  function streaks(activeKeys) {
+    if (!activeKeys.length) return { current: 0, best: 0, averageGap: 0, maxGap: 0 };
+    const days = [...new Set(activeKeys)].sort().map(key => localDay(new Date(`${key}T12:00:00`)));
+    let best = 1;
+    let run = 1;
+    const gaps = [];
+    for (let i = 1; i < days.length; i += 1) {
+      const difference = Math.round((days[i] - days[i - 1]) / DAY);
+      gaps.push(Math.max(0, difference - 1));
+      if (difference === 1) run += 1;
+      else run = 1;
+      best = Math.max(best, run);
+    }
+    let current = 1;
+    for (let i = days.length - 1; i > 0; i -= 1) {
+      if (Math.round((days[i] - days[i - 1]) / DAY) === 1) current += 1;
+      else break;
+    }
+    return {
+      current,
+      best,
+      averageGap: gaps.length ? gaps.reduce((sum, value) => sum + value, 0) / gaps.length : 0,
+      maxGap: gaps.length ? Math.max(...gaps) : 0
+    };
+  }
+
+  function buildModel(analytics, options = {}) {
+    const source = analytics || {};
+    const now = safeDate(options.now) || new Date();
+    const rawExercises = Array.isArray(source.exercises) ? source.exercises : [];
+    const rawWorkouts = Array.isArray(source.workouts) ? source.workouts : [];
+    const rawSets = Array.isArray(source.sets) ? source.sets : [];
+    const exerciseById = new Map();
+
+    for (const exercise of rawExercises) {
+      if (Number.isFinite(Number(exercise.id))) exerciseById.set(Number(exercise.id), exercise);
+    }
+
+    const normalizedWorkouts = rawWorkouts.map(workout => {
+      const finished = safeDate(workout.finishedAt) || safeDate(workout.startedAt);
+      const started = safeDate(workout.startedAt);
+      const durationMinutes = finished && started && finished >= started ? (finished - started) / 60000 : 0;
+      return { ...workout, id: Number(workout.id), finished, started, durationMinutes };
+    });
+    const workoutById = new Map(normalizedWorkouts.map(workout => [Number(workout.id), workout]));
+
+    const normalizedSets = rawSets.map(set => {
+      const exercise = exerciseById.get(Number(set.exerciseId));
+      const name = String(exercise?.name || set.exerciseName || 'Архивное упражнение');
+      const muscleGroup = String(exercise?.muscleGroup || 'Архив / другое');
+      const folderName = String(exercise?.folderName || 'Без папки');
+      return {
+        ...set,
+        id: Number(set.id),
+        workoutId: Number(set.workoutId),
+        exerciseId: set.exerciseId === null || set.exerciseId === undefined ? null : Number(set.exerciseId),
+        key: setKey(set),
+        name,
+        muscleGroup,
+        folderName,
+        weight: finite(set.weight),
+        reps: finite(set.reps),
+        factor: finite(set.factor) === 2 ? 2 : 1,
+        volume: setVolume(set),
+        estimated1RM: estimatedOneRepMax(set.weight, set.reps),
+        workout: workoutById.get(Number(set.workoutId)) || null
+      };
+    });
+
+    let from = null;
+    let to = null;
+    if (options.range === 'custom') {
